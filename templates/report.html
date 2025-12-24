@@ -1,0 +1,51 @@
+{% if error %}
+<div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert">
+    <strong class="font-bold">Error!</strong>
+    <span class="block sm:inline">{{ error }}</span>
+</div>
+{% else %}
+<div class="bg-white shadow-lg rounded-lg overflow-hidden animate-fade-in-down">
+    <div class="bg-gray-800 p-4 flex justify-between items-center">
+        <h3 class="text-xl text-white font-bold">{{ result.corp_name }} ({{ result.corp_code }})</h3>
+        <div class="flex items-center">
+            <span class="text-gray-300 mr-2">종합 등급</span>
+            <span class="text-3xl font-extrabold 
+                {% if result.grade == 'S' %}text-purple-400
+                {% elif result.grade == 'A' %}text-green-400
+                {% elif result.grade == 'B' %}text-yellow-400
+                {% else %}text-red-400{% endif %}">
+                {{ result.grade }}
+            </span>
+        </div>
+    </div>
+
+    <div class="p-6">
+        <p class="text-gray-700 text-lg mb-6 border-b pb-4">{{ result.total_comment }}</p>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {% for indicator in result.indicators %}
+            <div class="border rounded-lg p-4 
+                {% if indicator.status == 'success' %}border-green-200 bg-green-50
+                {% elif indicator.status == 'warning' %}border-yellow-200 bg-yellow-50
+                {% else %}border-red-200 bg-red-50{% endif %}">
+                
+                <div class="flex justify-between items-start mb-2">
+                    <h4 class="font-bold text-gray-800">{{ indicator.name }}</h4>
+                    {% if indicator.status == 'success' %}
+                        <span class="bg-green-200 text-green-800 text-xs px-2 py-1 rounded-full">Good</span>
+                    {% elif indicator.status == 'warning' %}
+                        <span class="bg-yellow-200 text-yellow-800 text-xs px-2 py-1 rounded-full">Normal</span>
+                    {% else %}
+                        <span class="bg-red-200 text-red-800 text-xs px-2 py-1 rounded-full">Bad</span>
+                    {% endif %}
+                </div>
+                
+                <div class="text-2xl font-bold mb-1 text-gray-900">{{ indicator.value }}</div>
+                <p class="text-sm text-gray-500 mb-2">기준: {{ indicator.threshold }}</p>
+                <p class="text-sm text-gray-700">{{ indicator.description }}</p>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+{% endif %}
