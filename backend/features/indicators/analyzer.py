@@ -232,21 +232,31 @@ class BuffettAnalyzer:
     """버핏형 가치투자 분석기"""
 
     async def analyze(self, corp_code: str, corp_name: str, year: str, fs_div: str = "CFS") -> AnalysisResult | None:
-        """종합 분석 수행 (데이터 없으면 최대 3년 전까지 fallback)"""
+        """종합 분석 수행 (데이터 없으면 최대 3년 전까지 fallback, CFS→OFS fallback)"""
 
-        # 연도 fallback 시도 (요청 연도 → 1년 전 → 2년 전 → 3년 전)
         statements = None
         actual_year = year
+        actual_fs_div = fs_div
 
-        for year_offset in range(4):  # 0, 1, 2, 3년 전
-            try_year = str(int(year) - year_offset)
-            data = await dart_client.get_financial_statements(
-                corp_code=corp_code, bsns_year=try_year, reprt_code="11011", fs_div=fs_div
-            )
+        # fs_div 우선순위: CFS(연결) → OFS(개별)
+        fs_divs_to_try = [fs_div]
+        if fs_div == "CFS":
+            fs_divs_to_try.append("OFS")  # 연결 없으면 개별로 시도
 
-            if data.get("status") == "000" and data.get("list"):
-                statements = data.get("list", [])
-                actual_year = try_year
+        # 연도 + 재무제표 유형 조합으로 시도
+        for try_fs_div in fs_divs_to_try:
+            for year_offset in range(4):  # 0, 1, 2, 3년 전
+                try_year = str(int(year) - year_offset)
+                data = await dart_client.get_financial_statements(
+                    corp_code=corp_code, bsns_year=try_year, reprt_code="11011", fs_div=try_fs_div
+                )
+
+                if data.get("status") == "000" and data.get("list"):
+                    statements = data.get("list", [])
+                    actual_year = try_year
+                    actual_fs_div = try_fs_div
+                    break
+            if statements:
                 break
 
         if not statements:
@@ -297,14 +307,20 @@ class BuffettAnalyzer:
         signal, recommendation = self._get_signal(total_score, filter_result)
 
         # fallback 발생 시 recommendation에 표시
+        fallback_info = []
         if actual_year != year:
-            recommendation = f"[{actual_year}년 데이터 사용] " + recommendation
+            fallback_info.append(f"{actual_year}년")
+        if actual_fs_div != fs_div:
+            fs_label = "개별" if actual_fs_div == "OFS" else "연결"
+            fallback_info.append(f"{fs_label}재무제표")
+        if fallback_info:
+            recommendation = f"[{', '.join(fallback_info)} 사용] " + recommendation
 
         return AnalysisResult(
             corp_code=corp_code,
             corp_name=corp_name,
             year=actual_year,  # 실제 데이터가 있는 연도
-            fs_div=fs_div,
+            fs_div=actual_fs_div,  # 실제 사용된 재무제표 유형
             indicators=indicators,
             total_score=round(total_score, 1),
             signal=signal,
