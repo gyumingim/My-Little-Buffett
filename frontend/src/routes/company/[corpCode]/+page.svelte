@@ -10,10 +10,11 @@
     name: string;
     value: number;
     score: number;
+    max_score: number;
     grade: string;
     description: string;
     good_criteria: string;
-    trend?: string;
+    category: string;
   }
 
   interface AnalysisData {
@@ -24,6 +25,8 @@
     total_score: number;
     signal: string;
     recommendation: string;
+    filter_passed: boolean;
+    filter_reasons: string[];
     indicators: Indicator[];
     analysis_date: string;
   }
@@ -84,6 +87,7 @@
       case '관망': return 'signal-hold';
       case '매도': return 'signal-sell';
       case '강력매도': return 'signal-strong-sell';
+      case '투자부적격': return 'signal-disqualified';
       default: return 'signal-neutral';
     }
   }
@@ -108,54 +112,47 @@
   }
 
   function formatValue(indicator: Indicator): string {
-    const name = indicator.name;
     const val = indicator.value;
-
-    if (name.includes('배율')) {
+    if (val === 999) return '∞';
+    if (indicator.name.includes('배율')) {
+      return val.toFixed(1) + '배';
+    } else if (indicator.name.includes('률') || indicator.name.includes('율') || indicator.name.includes('비율')) {
+      return val.toFixed(1) + '%';
+    } else if (indicator.name.includes('창출력')) {
       return val.toFixed(2) + '배';
-    } else if (name.includes('률') || name.includes('율')) {
-      return val.toFixed(2) + '%';
-    } else if (name.includes('비율')) {
-      return val.toFixed(2) + '%';
     }
-    return val.toFixed(2);
+    return val.toFixed(1);
   }
 
-  function getTrendIcon(trend?: string): string {
-    if (!trend) return '';
-    switch (trend) {
-      case 'up': return '↑';
-      case 'down': return '↓';
-      default: return '→';
+  function getCategoryIcon(category: string): string {
+    switch (category) {
+      case '수익성': return '💰';
+      case '현금창출': return '💵';
+      case '성장성': return '📈';
+      case '안정성': return '🛡️';
+      default: return '📊';
     }
   }
 
-  function getTrendClass(trend?: string): string {
-    if (!trend) return '';
-    switch (trend) {
-      case 'up': return 'trend-up';
-      case 'down': return 'trend-down';
-      default: return 'trend-stable';
+  function getCategoryColor(category: string): string {
+    switch (category) {
+      case '수익성': return 'cat-profit';
+      case '현금창출': return 'cat-cash';
+      case '성장성': return 'cat-growth';
+      case '안정성': return 'cat-safety';
+      default: return '';
     }
-  }
-
-  function getCategoryIcon(name: string): string {
-    if (name.includes('ROE') || name.includes('마진') || name.includes('이익')) return '💰';
-    if (name.includes('부채') || name.includes('이자') || name.includes('유동')) return '🏦';
-    if (name.includes('성장')) return '📈';
-    if (name.includes('현금')) return '💵';
-    return '📊';
   }
 </script>
 
 <svelte:head>
-  <title>{corpName || '기업'} 분석 결과 - My Little Buffett</title>
+  <title>{corpName || '기업'} 버핏 분석 - My Little Buffett</title>
 </svelte:head>
 
 <div class="container">
   {#if loading}
     <div class="loading-section">
-      <Loading size="lg" text="분석 중입니다..." />
+      <Loading size="lg" text="버핏 기준으로 분석 중..." />
       <p class="loading-hint">재무제표 데이터를 분석하고 있습니다</p>
     </div>
   {:else if error}
@@ -181,14 +178,27 @@
       <p class="analysis-date">분석일: {analysis.analysis_date}</p>
     </div>
 
+    <!-- 필터링 실패 경고 -->
+    {#if !analysis.filter_passed}
+      <div class="filter-warning">
+        <h3>⚠️ 투자 부적격 판정</h3>
+        <p>버핏의 안전마진 기준을 통과하지 못했습니다:</p>
+        <ul>
+          {#each analysis.filter_reasons as reason}
+            <li>{reason}</li>
+          {/each}
+        </ul>
+      </div>
+    {/if}
+
     <!-- 종합 점수 카드 -->
     <Card>
       <div class="score-card">
         <div class="score-main">
-          <div class="total-score {getScoreColor(analysis.total_score)}">
-            {analysis.total_score}
+          <div class="total-score {getScoreColor(analysis.total_score)}" class:disqualified={!analysis.filter_passed}>
+            {analysis.filter_passed ? analysis.total_score : 0}
           </div>
-          <div class="score-label">종합 점수</div>
+          <div class="score-label">/ 100점</div>
         </div>
         <div class="signal-section">
           <span class="signal-badge {getSignalColor(analysis.signal)}">
@@ -199,41 +209,49 @@
       </div>
     </Card>
 
-    <!-- 등급 범례 -->
-    <div class="legend">
-      <h4>지표 등급 안내</h4>
-      <div class="legend-items">
-        <span class="legend-item"><span class="grade-badge grade-a">A</span> 우수 (80+)</span>
-        <span class="legend-item"><span class="grade-badge grade-b">B</span> 양호 (65-79)</span>
-        <span class="legend-item"><span class="grade-badge grade-c">C</span> 보통 (50-64)</span>
-        <span class="legend-item"><span class="grade-badge grade-d">D</span> 미흡 (35-49)</span>
-        <span class="legend-item"><span class="grade-badge grade-f">F</span> 위험 (0-34)</span>
+    <!-- 점수 배분 안내 -->
+    <div class="scoring-info">
+      <h4>버핏형 채점 기준 (100점 만점)</h4>
+      <div class="scoring-breakdown">
+        <span class="scoring-item cat-profit">💰 ROE 30점</span>
+        <span class="scoring-item cat-cash">💵 현금창출 25점</span>
+        <span class="scoring-item cat-growth">📈 성장성 20점</span>
+        <span class="scoring-item cat-safety">🛡️ 안정성 25점</span>
       </div>
     </div>
 
     <!-- 지표 섹션 -->
     <div class="indicators-section">
-      <h2>10대 재무 지표 상세 분석</h2>
+      <h2>5대 핵심 지표 상세</h2>
 
       <div class="indicators-grid">
         {#each analysis.indicators as indicator}
-          <div class="indicator-card">
+          <div class="indicator-card {getCategoryColor(indicator.category)}">
             <div class="indicator-header">
-              <span class="indicator-icon">{getCategoryIcon(indicator.name)}</span>
-              <h3 class="indicator-name">{indicator.name}</h3>
+              <span class="indicator-icon">{getCategoryIcon(indicator.category)}</span>
+              <div class="indicator-title">
+                <h3 class="indicator-name">{indicator.name}</h3>
+                <span class="indicator-category">{indicator.category}</span>
+              </div>
               <div class="indicator-grade">
                 <span class="grade-badge {getGradeColor(indicator.grade)}">{indicator.grade}</span>
-                <span class="score-small {getScoreColor(indicator.score)}">{indicator.score}점</span>
               </div>
+            </div>
+
+            <div class="indicator-score-bar">
+              <div class="score-bar-bg">
+                <div
+                  class="score-bar-fill {getScoreColor(indicator.score / indicator.max_score * 100)}"
+                  style="width: {(indicator.score / indicator.max_score) * 100}%"
+                ></div>
+              </div>
+              <span class="score-text">{indicator.score} / {indicator.max_score}점</span>
             </div>
 
             <div class="indicator-value-row">
               <span class="value-label">측정값</span>
-              <span class="value-number {getTrendClass(indicator.trend)}">
+              <span class="value-number">
                 {formatValue(indicator)}
-                {#if indicator.trend}
-                  <span class="trend-icon">{getTrendIcon(indicator.trend)}</span>
-                {/if}
               </span>
             </div>
 
@@ -242,7 +260,7 @@
             </div>
 
             <div class="indicator-criteria">
-              <span class="criteria-label">좋은 기준</span>
+              <span class="criteria-label">버핏 기준</span>
               <span class="criteria-value">{indicator.good_criteria}</span>
             </div>
           </div>
@@ -280,7 +298,7 @@
     display: flex;
     justify-content: space-between;
     align-items: flex-start;
-    margin-bottom: 2rem;
+    margin-bottom: 1.5rem;
     flex-wrap: wrap;
     gap: 1rem;
   }
@@ -324,12 +342,44 @@
     font-size: 0.875rem;
   }
 
+  /* 필터링 경고 */
+  .filter-warning {
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+    border-radius: var(--border-radius-lg);
+    padding: 1.25rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .filter-warning h3 {
+    color: #991b1b;
+    margin: 0 0 0.5rem;
+    font-size: 1rem;
+  }
+
+  .filter-warning p {
+    color: #b91c1c;
+    margin: 0 0 0.5rem;
+    font-size: 0.875rem;
+  }
+
+  .filter-warning ul {
+    margin: 0;
+    padding-left: 1.25rem;
+  }
+
+  .filter-warning li {
+    color: #dc2626;
+    font-size: 0.875rem;
+    margin-bottom: 0.25rem;
+  }
+
   /* 종합 점수 카드 */
   .score-card {
     display: flex;
     align-items: center;
     gap: 2rem;
-    padding: 1rem;
+    padding: 1.5rem;
   }
 
   .score-main {
@@ -337,16 +387,23 @@
   }
 
   .total-score {
-    font-size: 3rem;
+    font-size: 3.5rem;
     font-weight: 800;
     padding: 1rem 1.5rem;
     border-radius: var(--border-radius-lg);
+    min-width: 100px;
+  }
+
+  .total-score.disqualified {
+    background: #f3f4f6 !important;
+    color: #9ca3af !important;
+    text-decoration: line-through;
   }
 
   .score-label {
     font-size: 0.875rem;
     color: var(--text-secondary);
-    margin-top: 0.5rem;
+    margin-top: 0.25rem;
   }
 
   .signal-section {
@@ -355,10 +412,10 @@
 
   .signal-badge {
     display: inline-block;
-    padding: 0.5rem 1.25rem;
+    padding: 0.5rem 1.5rem;
     border-radius: 9999px;
     font-weight: 700;
-    font-size: 1.125rem;
+    font-size: 1.25rem;
   }
 
   .recommendation {
@@ -373,6 +430,7 @@
   .signal-hold { background: #fef3c7; color: #92400e; }
   .signal-sell { background: #fee2e2; color: #991b1b; }
   .signal-strong-sell { background: #fecaca; color: #7f1d1d; }
+  .signal-disqualified { background: #f3f4f6; color: #6b7280; }
   .signal-neutral { background: #f3f4f6; color: #4b5563; }
 
   /* 점수 색상 */
@@ -382,32 +440,38 @@
   .score-poor { color: #9a3412; background: #ffedd5; }
   .score-bad { color: #991b1b; background: #fee2e2; }
 
-  /* 범례 */
-  .legend {
+  /* 점수 배분 안내 */
+  .scoring-info {
     background: var(--bg-secondary);
     padding: 1rem 1.25rem;
     border-radius: var(--border-radius);
     margin: 1.5rem 0;
   }
 
-  .legend h4 {
+  .scoring-info h4 {
     font-size: 0.875rem;
     color: var(--text-secondary);
     margin-bottom: 0.75rem;
   }
 
-  .legend-items {
+  .scoring-breakdown {
     display: flex;
-    gap: 1.25rem;
+    gap: 1rem;
     flex-wrap: wrap;
   }
 
-  .legend-item {
-    display: flex;
-    align-items: center;
-    gap: 0.375rem;
+  .scoring-item {
     font-size: 0.8125rem;
+    padding: 0.25rem 0.75rem;
+    border-radius: var(--border-radius);
+    font-weight: 500;
   }
+
+  /* 카테고리 색상 */
+  .cat-profit { background: #fef3c7; color: #92400e; }
+  .cat-cash { background: #d1fae5; color: #047857; }
+  .cat-growth { background: #dbeafe; color: #1d4ed8; }
+  .cat-safety { background: #f3e8ff; color: #7c3aed; }
 
   /* 지표 섹션 */
   .indicators-section {
@@ -432,29 +496,42 @@
     border-radius: var(--border-radius-lg);
     padding: 1.25rem;
     transition: all 0.2s;
+    border-left: 4px solid transparent;
   }
 
+  .indicator-card.cat-profit { border-left-color: #f59e0b; }
+  .indicator-card.cat-cash { border-left-color: #10b981; }
+  .indicator-card.cat-growth { border-left-color: #3b82f6; }
+  .indicator-card.cat-safety { border-left-color: #8b5cf6; }
+
   .indicator-card:hover {
-    border-color: var(--color-primary);
     box-shadow: 0 2px 8px rgba(0,0,0,0.06);
   }
 
   .indicator-header {
     display: flex;
-    align-items: center;
-    gap: 0.5rem;
+    align-items: flex-start;
+    gap: 0.75rem;
     margin-bottom: 1rem;
   }
 
   .indicator-icon {
-    font-size: 1.25rem;
+    font-size: 1.5rem;
+  }
+
+  .indicator-title {
+    flex: 1;
   }
 
   .indicator-name {
-    flex: 1;
     font-size: 1rem;
     font-weight: 600;
     margin: 0;
+  }
+
+  .indicator-category {
+    font-size: 0.75rem;
+    color: var(--text-muted);
   }
 
   .indicator-grade {
@@ -464,13 +541,13 @@
   }
 
   .grade-badge {
-    width: 1.75rem;
-    height: 1.75rem;
+    width: 2rem;
+    height: 2rem;
     display: flex;
     align-items: center;
     justify-content: center;
-    border-radius: 0.375rem;
-    font-size: 0.875rem;
+    border-radius: 0.5rem;
+    font-size: 1rem;
     font-weight: 700;
   }
 
@@ -480,11 +557,39 @@
   .grade-d { background: #ffedd5; color: #9a3412; }
   .grade-f { background: #fee2e2; color: #991b1b; }
 
-  .score-small {
+  /* 점수 바 */
+  .indicator-score-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 0.75rem;
+  }
+
+  .score-bar-bg {
+    flex: 1;
+    height: 8px;
+    background: #e5e7eb;
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  .score-bar-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.3s;
+  }
+
+  .score-bar-fill.score-excellent { background: #22c55e; }
+  .score-bar-fill.score-good { background: #10b981; }
+  .score-bar-fill.score-average { background: #f59e0b; }
+  .score-bar-fill.score-poor { background: #f97316; }
+  .score-bar-fill.score-bad { background: #ef4444; }
+
+  .score-text {
     font-size: 0.8125rem;
     font-weight: 600;
-    padding: 0.125rem 0.5rem;
-    border-radius: var(--border-radius);
+    color: var(--text-secondary);
+    white-space: nowrap;
   }
 
   .indicator-value-row {
@@ -503,20 +608,9 @@
   }
 
   .value-number {
-    font-size: 1.125rem;
+    font-size: 1.25rem;
     font-weight: 700;
-    display: flex;
-    align-items: center;
-    gap: 0.25rem;
   }
-
-  .trend-icon {
-    font-size: 0.875rem;
-  }
-
-  .trend-up { color: #166534; }
-  .trend-down { color: #991b1b; }
-  .trend-stable { color: #6b7280; }
 
   .indicator-description {
     margin-bottom: 0.75rem;
@@ -589,6 +683,11 @@
 
     .total-score {
       font-size: 2.5rem;
+    }
+
+    .scoring-breakdown {
+      flex-direction: column;
+      gap: 0.5rem;
     }
 
     .actions {

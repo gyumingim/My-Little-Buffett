@@ -1,4 +1,17 @@
-"""종합 투자 분석 서비스 (재무제표 기반 10개 지표)"""
+"""
+버핏형 텐배거 채점 알고리즘
+
+워런 버핏의 가치투자 원칙 기반:
+1. 필터링 단계: 부적격 기업 제외 (좀비 기업 걸러내기)
+2. 스코어링 단계: 100점 만점 채점
+
+점수 배분:
+- 수익성의 지속성 (ROE): 30점
+- 현금 창출 능력: 25점
+- 성장성 및 해자: 20점
+- 재무 안정성: 15점
+- 현금흐름 질: 10점
+"""
 
 from datetime import datetime
 from dataclasses import dataclass
@@ -23,24 +36,11 @@ class FinancialMetrics:
     current_liabilities: float = 0  # 유동부채
     total_equity: float = 0  # 자본총계
     retained_earnings: float = 0  # 이익잉여금
-    short_term_borrowings: float = 0  # 단기차입금
-    bonds: float = 0  # 사채
 
     # 현금흐름표 (CF)
     operating_cash_flow: float = 0  # 영업활동 현금흐름
     investing_cash_flow: float = 0  # 투자활동 현금흐름
     financing_cash_flow: float = 0  # 재무활동 현금흐름
-    interest_paid: float = 0  # 이자의 지급
-    capex: float = 0  # 유형자산 취득
-
-
-@dataclass
-class YearMetrics:
-    """연도별 재무 지표"""
-    year: str
-    current: FinancialMetrics  # 당기
-    previous: FinancialMetrics | None = None  # 전기
-    before_previous: FinancialMetrics | None = None  # 전전기
 
 
 def parse_amount(value: str | None) -> float:
@@ -74,8 +74,8 @@ def extract_metrics(statements: list, term: str = "thstrm") -> FinancialMetrics:
                 m.gross_profit = amount
             elif account_id == "dart_OperatingIncomeLoss" or "영업이익" in account_nm:
                 m.operating_income = max(m.operating_income, amount)
-            elif "금융비용" in account_nm:
-                m.finance_cost = amount
+            elif "금융비용" in account_nm or "이자비용" in account_nm:
+                m.finance_cost = max(m.finance_cost, amount)
             elif account_id == "ifrs_ProfitLoss" or "당기순이익" in account_nm:
                 m.net_income = max(m.net_income, amount)
 
@@ -93,10 +93,6 @@ def extract_metrics(statements: list, term: str = "thstrm") -> FinancialMetrics:
                 m.total_equity = amount
             elif account_id == "ifrs_RetainedEarnings":
                 m.retained_earnings = amount
-            elif account_id == "ifrs_ShorttermBorrowings" or "단기차입금" in account_nm:
-                m.short_term_borrowings = amount
-            elif account_id == "dart_BondsIssued" or account_nm == "사채":
-                m.bonds = amount
 
         # 현금흐름표 (CF)
         elif sj_div == "CF":
@@ -106,10 +102,6 @@ def extract_metrics(statements: list, term: str = "thstrm") -> FinancialMetrics:
                 m.investing_cash_flow = amount
             elif account_id == "ifrs_CashFlowsFromUsedInFinancingActivities":
                 m.financing_cash_flow = amount
-            elif "이자의 지급" in account_nm:
-                m.interest_paid = amount
-            elif "유형자산의 취득" in account_nm:
-                m.capex = abs(amount)
 
     return m
 
@@ -119,11 +111,19 @@ class Indicator:
     """개별 지표"""
     name: str
     value: float
-    score: float  # 0-100
+    score: float  # 0-100 (해당 항목 만점 기준)
+    max_score: float  # 해당 항목 최대 점수
     grade: str  # A/B/C/D/F
     description: str
-    good_criteria: str  # 좋은 기준 설명
-    trend: str = ""  # 상승/하락/유지
+    good_criteria: str
+    category: str  # 수익성/안정성/성장성/현금흐름
+
+
+@dataclass
+class FilterResult:
+    """필터링 결과"""
+    passed: bool
+    failed_reasons: list[str]
 
 
 @dataclass
@@ -132,17 +132,19 @@ class AnalysisResult:
     corp_code: str
     corp_name: str
     year: str
+    fs_div: str
     indicators: list[Indicator]
     total_score: float  # 0-100
     signal: str  # 강력매수/매수/관망/매도/강력매도
     recommendation: str
-    metrics: dict  # 원본 수치
+    filter_result: FilterResult
+    metrics: dict
 
 
-class FinancialAnalyzer:
-    """재무제표 기반 종합 분석"""
+class BuffettAnalyzer:
+    """버핏형 가치투자 분석기"""
 
-    async def analyze(self, corp_code: str, corp_name: str, year: str, fs_div: str = "OFS") -> AnalysisResult | None:
+    async def analyze(self, corp_code: str, corp_name: str, year: str, fs_div: str = "CFS") -> AnalysisResult | None:
         """종합 분석 수행"""
         # 재무제표 조회
         data = await dart_client.get_financial_statements(
@@ -153,374 +155,330 @@ class FinancialAnalyzer:
             return None
 
         statements = data.get("list", [])
+        if not statements:
+            return None
 
         # 3개년 지표 추출
         current = extract_metrics(statements, "thstrm")
         previous = extract_metrics(statements, "frmtrm")
         before_prev = extract_metrics(statements, "bfefrmtrm")
 
-        # 10개 지표 계산
+        # ========================================
+        # 1단계: 필터링 (부적격 기업 제외)
+        # ========================================
+        filter_result = self._apply_filters(current, previous)
+
+        # ========================================
+        # 2단계: 버핏형 채점 (100점 만점)
+        # ========================================
         indicators = []
 
-        # 1. 수익성 지표
-        indicators.append(self._calc_roe(current))
-        indicators.append(self._calc_operating_margin(current))
-        indicators.append(self._calc_net_margin(current))
+        # (1) 수익성의 지속성 - ROE (30점)
+        roe_indicator = self._calc_roe_buffett(current, previous, before_prev)
+        indicators.append(roe_indicator)
 
-        # 2. 안정성 지표
-        indicators.append(self._calc_debt_ratio(current))
-        indicators.append(self._calc_interest_coverage(current))
-        indicators.append(self._calc_current_ratio(current))
+        # (2) 현금 창출 능력 - PCR (25점)
+        pcr_indicator = self._calc_cash_generation_buffett(current)
+        indicators.append(pcr_indicator)
 
-        # 3. 성장성 지표
-        indicators.append(self._calc_revenue_growth(current, previous))
-        indicators.append(self._calc_operating_growth(current, previous))
-        indicators.append(self._calc_net_income_growth(current, previous))
+        # (3) 성장성 및 해자 - 영업이익 성장률 (20점)
+        growth_indicator = self._calc_growth_buffett(current, previous)
+        indicators.append(growth_indicator)
 
-        # 4. 현금흐름 지표
-        indicators.append(self._calc_cash_flow_quality(current))
+        # (4) 재무 안정성 - 이자보상배율 (15점)
+        safety_indicator = self._calc_interest_coverage_buffett(current)
+        indicators.append(safety_indicator)
 
-        # 종합 점수 계산 (가중 평균)
-        weights = [15, 10, 10, 10, 15, 5, 10, 10, 5, 10]  # 총 100
-        total_score = sum(ind.score * w / 100 for ind, w in zip(indicators, weights))
+        # (5) 현금흐름 질 - 영업CF/순이익 (10점)
+        cfq_indicator = self._calc_cashflow_quality_buffett(current)
+        indicators.append(cfq_indicator)
+
+        # 필터 통과 못하면 0점
+        if not filter_result.passed:
+            total_score = 0.0
+        else:
+            total_score = sum(ind.score for ind in indicators)
 
         # 신호 결정
-        if total_score >= 80:
-            signal = "강력매수"
-            recommendation = "모든 재무지표가 우수합니다. 장기 투자 적합."
-        elif total_score >= 65:
-            signal = "매수"
-            recommendation = "대부분의 지표가 양호합니다. 투자 고려."
-        elif total_score >= 50:
-            signal = "관망"
-            recommendation = "일부 지표에 주의가 필요합니다."
-        elif total_score >= 35:
-            signal = "매도"
-            recommendation = "여러 지표가 부정적입니다. 신중한 접근 필요."
-        else:
-            signal = "강력매도"
-            recommendation = "재무 상태가 좋지 않습니다. 투자 회피 권고."
+        signal, recommendation = self._get_signal(total_score, filter_result)
 
         return AnalysisResult(
             corp_code=corp_code,
             corp_name=corp_name,
             year=year,
+            fs_div=fs_div,
             indicators=indicators,
             total_score=round(total_score, 1),
             signal=signal,
             recommendation=recommendation,
+            filter_result=filter_result,
             metrics={
                 "current": current.__dict__,
                 "previous": previous.__dict__,
             }
         )
 
-    def _calc_roe(self, m: FinancialMetrics) -> Indicator:
-        """ROE (자기자본이익률) = 당기순이익 / 자본총계 × 100"""
-        if m.total_equity <= 0:
-            return Indicator("ROE", 0, 0, "F", "자본잠식 상태", "15% 이상이 우수")
+    def _apply_filters(self, current: FinancialMetrics, previous: FinancialMetrics) -> FilterResult:
+        """필터링 단계: 좀비 기업 걸러내기"""
+        failed_reasons = []
 
-        value = (m.net_income / m.total_equity) * 100
+        # 필터 1: 이자보상배율 < 1.0 (이자도 못 갚는 기업)
+        if current.finance_cost > 0:
+            interest_coverage = current.operating_income / current.finance_cost
+            if interest_coverage < 1.0:
+                failed_reasons.append(f"이자보상배율 {interest_coverage:.1f}배 (1.0 미만 - 이자도 못 갚음)")
 
-        if value >= 20:
-            score, grade = 100, "A"
-        elif value >= 15:
-            score, grade = 85, "A"
-        elif value >= 10:
-            score, grade = 70, "B"
-        elif value >= 5:
-            score, grade = 50, "C"
-        elif value >= 0:
-            score, grade = 30, "D"
+        # 필터 2: 2년 연속 영업CF < 순이익 (이익의 질 낮음)
+        if current.net_income > 0 and previous.net_income > 0:
+            curr_cfq = current.operating_cash_flow / current.net_income if current.net_income > 0 else 0
+            prev_cfq = previous.operating_cash_flow / previous.net_income if previous.net_income > 0 else 0
+            if curr_cfq < 1.0 and prev_cfq < 1.0:
+                failed_reasons.append(f"2년 연속 현금흐름 질 낮음 (영업CF < 순이익)")
+
+        # 필터 3: 자본잠식 (자본총계 <= 0)
+        if current.total_equity <= 0:
+            failed_reasons.append("자본잠식 상태")
+
+        # 필터 4: 2년 연속 적자
+        if current.net_income < 0 and previous.net_income < 0:
+            failed_reasons.append("2년 연속 적자")
+
+        return FilterResult(
+            passed=len(failed_reasons) == 0,
+            failed_reasons=failed_reasons
+        )
+
+    def _calc_roe_buffett(self, curr: FinancialMetrics, prev: FinancialMetrics, bprev: FinancialMetrics) -> Indicator:
+        """
+        ROE (자기자본이익률) - 30점 만점
+        버핏 기준: 지속적으로 15% 이상
+        """
+        max_score = 30
+
+        if curr.total_equity <= 0:
+            return Indicator("ROE (자기자본이익률)", 0, 0, max_score, "F",
+                           "자본잠식", "15% 이상 지속", "수익성")
+
+        roe = (curr.net_income / curr.total_equity) * 100
+
+        # 버핏 기준 채점
+        if roe >= 20:
+            score = 30  # 탁월
+        elif roe >= 15:
+            score = 25  # 우수 (버핏 기준)
+        elif roe >= 10:
+            score = 15  # 양호
+        elif roe >= 5:
+            score = 8   # 보통
+        elif roe >= 0:
+            score = 3   # 미흡
         else:
-            score, grade = 0, "F"
+            score = 0   # 적자
+
+        grade = self._score_to_grade(score, max_score)
 
         return Indicator(
             name="ROE (자기자본이익률)",
-            value=round(value, 1),
+            value=round(roe, 1),
             score=score,
+            max_score=max_score,
             grade=grade,
-            description=f"자본 대비 {value:.1f}% 수익 창출",
-            good_criteria="15% 이상 우수, 10% 이상 양호"
+            description=f"자본 대비 {roe:.1f}% 수익 창출" if roe > 0 else "적자 상태",
+            good_criteria="15% 이상 지속 (버핏 기준)",
+            category="수익성"
         )
 
-    def _calc_operating_margin(self, m: FinancialMetrics) -> Indicator:
-        """영업이익률 = 영업이익 / 매출액 × 100"""
-        if m.revenue <= 0:
-            return Indicator("영업이익률", 0, 0, "F", "매출 없음", "10% 이상이 양호")
+    def _calc_cash_generation_buffett(self, m: FinancialMetrics) -> Indicator:
+        """
+        현금 창출 능력 (영업CF/순이익) - 25점 만점
+        버핏 기준: 1.2 이상이면 우수
+        """
+        max_score = 25
 
-        value = (m.operating_income / m.revenue) * 100
+        if m.net_income <= 0:
+            if m.operating_cash_flow > 0:
+                return Indicator("현금창출력 (OCF/NI)", 999, 25, max_score, "A",
+                               "적자에도 현금 창출", "1.2 이상", "현금창출")
+            return Indicator("현금창출력 (OCF/NI)", 0, 0, max_score, "F",
+                           "적자 + 현금흐름 부정적", "1.2 이상", "현금창출")
 
-        if value >= 20:
-            score, grade = 100, "A"
-        elif value >= 15:
-            score, grade = 85, "A"
-        elif value >= 10:
-            score, grade = 70, "B"
-        elif value >= 5:
-            score, grade = 50, "C"
-        elif value >= 0:
-            score, grade = 30, "D"
+        ratio = m.operating_cash_flow / m.net_income
+
+        if ratio >= 1.5:
+            score = 25  # 탁월
+        elif ratio >= 1.2:
+            score = 22  # 우수 (버핏 기준)
+        elif ratio >= 1.0:
+            score = 15  # 양호
+        elif ratio >= 0.7:
+            score = 8   # 보통
+        elif ratio >= 0.5:
+            score = 4   # 미흡
         else:
-            score, grade = 0, "F"
+            score = 0   # 위험
+
+        grade = self._score_to_grade(score, max_score)
 
         return Indicator(
-            name="영업이익률",
-            value=round(value, 1),
+            name="현금창출력 (OCF/NI)",
+            value=round(ratio, 2),
             score=score,
+            max_score=max_score,
             grade=grade,
-            description=f"매출 대비 {value:.1f}% 영업이익",
-            good_criteria="15% 이상 우수, 10% 이상 양호"
+            description=f"순이익 대비 {ratio:.2f}배 현금 창출",
+            good_criteria="1.2 이상 (이익보다 현금이 많이 들어옴)",
+            category="현금창출"
         )
 
-    def _calc_net_margin(self, m: FinancialMetrics) -> Indicator:
-        """순이익률 = 당기순이익 / 매출액 × 100"""
-        if m.revenue <= 0:
-            return Indicator("순이익률", 0, 0, "F", "매출 없음", "7% 이상이 양호")
+    def _calc_growth_buffett(self, curr: FinancialMetrics, prev: FinancialMetrics) -> Indicator:
+        """
+        영업이익 성장률 - 20점 만점
+        버핏 기준: 15% 이상 고성장
+        """
+        max_score = 20
 
-        value = (m.net_income / m.revenue) * 100
+        if prev.operating_income <= 0:
+            if curr.operating_income > 0:
+                return Indicator("영업이익 성장률", 100, 20, max_score, "A",
+                               "흑자 전환 성공", "15% 이상 성장", "성장성")
+            return Indicator("영업이익 성장률", 0, 0, max_score, "F",
+                           "적자 지속", "15% 이상 성장", "성장성")
 
-        if value >= 15:
-            score, grade = 100, "A"
-        elif value >= 10:
-            score, grade = 85, "A"
-        elif value >= 7:
-            score, grade = 70, "B"
-        elif value >= 3:
-            score, grade = 50, "C"
-        elif value >= 0:
-            score, grade = 30, "D"
+        growth = ((curr.operating_income - prev.operating_income) / abs(prev.operating_income)) * 100
+
+        if growth >= 30:
+            score = 20  # 탁월
+        elif growth >= 15:
+            score = 18  # 고성장 (버핏 기준)
+        elif growth >= 5:
+            score = 12  # 안정적 성장
+        elif growth >= 0:
+            score = 6   # 보합
+        elif growth >= -15:
+            score = 2   # 역성장
         else:
-            score, grade = 0, "F"
+            score = 0   # 급감
+
+        grade = self._score_to_grade(score, max_score)
+        trend = "성장" if growth > 0 else ("감소" if growth < 0 else "유지")
 
         return Indicator(
-            name="순이익률",
-            value=round(value, 1),
+            name="영업이익 성장률",
+            value=round(growth, 1),
             score=score,
+            max_score=max_score,
             grade=grade,
-            description=f"매출 대비 {value:.1f}% 순이익",
-            good_criteria="10% 이상 우수, 7% 이상 양호"
+            description=f"전년 대비 {growth:+.1f}% {trend}",
+            good_criteria="15% 이상 고성장",
+            category="성장성"
         )
 
-    def _calc_debt_ratio(self, m: FinancialMetrics) -> Indicator:
-        """부채비율 = 부채총계 / 자본총계 × 100"""
-        if m.total_equity <= 0:
-            return Indicator("부채비율", 999, 0, "F", "자본잠식", "100% 이하가 안전")
+    def _calc_interest_coverage_buffett(self, m: FinancialMetrics) -> Indicator:
+        """
+        이자보상배율 - 15점 만점
+        버핏 기준: 3배 이상 안전
+        """
+        max_score = 15
 
-        value = (m.total_liabilities / m.total_equity) * 100
-
-        if value <= 50:
-            score, grade = 100, "A"
-        elif value <= 100:
-            score, grade = 80, "B"
-        elif value <= 150:
-            score, grade = 60, "C"
-        elif value <= 200:
-            score, grade = 40, "D"
-        else:
-            score, grade = 20, "F"
-
-        return Indicator(
-            name="부채비율",
-            value=round(value, 1),
-            score=score,
-            grade=grade,
-            description=f"자본 대비 부채 {value:.1f}%",
-            good_criteria="100% 이하 안전, 50% 이하 우수"
-        )
-
-    def _calc_interest_coverage(self, m: FinancialMetrics) -> Indicator:
-        """이자보상배율 = 영업이익 / 금융비용"""
-        interest = m.finance_cost if m.finance_cost > 0 else m.interest_paid
-
-        if interest <= 0:
+        if m.finance_cost <= 0:
             if m.operating_income > 0:
-                return Indicator("이자보상배율", 999, 100, "A", "무차입 경영", "3배 이상이 안전")
-            else:
-                return Indicator("이자보상배율", 0, 50, "C", "영업이익 없음", "3배 이상이 안전")
+                return Indicator("이자보상배율", 999, 15, max_score, "A",
+                               "무차입 또는 이자비용 없음", "3배 이상", "안정성")
+            return Indicator("이자보상배율", 0, 8, max_score, "B",
+                           "영업이익 없지만 이자부담도 없음", "3배 이상", "안정성")
 
-        value = m.operating_income / interest
+        ratio = m.operating_income / m.finance_cost
 
-        if value >= 5:
-            score, grade = 100, "A"
-        elif value >= 3:
-            score, grade = 85, "A"
-        elif value >= 2:
-            score, grade = 65, "B"
-        elif value >= 1:
-            score, grade = 40, "C"
-        elif value >= 0:
-            score, grade = 20, "D"
+        if ratio >= 5.0:
+            score = 15  # 매우 안전
+        elif ratio >= 3.0:
+            score = 12  # 안전 (버핏 기준)
+        elif ratio >= 1.5:
+            score = 7   # 보통
+        elif ratio >= 1.0:
+            score = 3   # 위험
         else:
-            score, grade = 0, "F"
+            score = 0   # 매우 위험 (이자도 못 갚음)
+
+        grade = self._score_to_grade(score, max_score)
 
         return Indicator(
             name="이자보상배율",
-            value=round(value, 1),
+            value=round(ratio, 1),
             score=score,
+            max_score=max_score,
             grade=grade,
-            description=f"영업이익이 이자비용의 {value:.1f}배",
-            good_criteria="3배 이상 안전, 1배 미만 위험"
+            description=f"영업이익이 이자비용의 {ratio:.1f}배",
+            good_criteria="3배 이상 안전, 1배 미만 위험",
+            category="안정성"
         )
 
-    def _calc_current_ratio(self, m: FinancialMetrics) -> Indicator:
-        """유동비율 = 유동자산 / 유동부채 × 100"""
-        if m.current_liabilities <= 0:
-            return Indicator("유동비율", 999, 100, "A", "단기부채 없음", "150% 이상이 안전")
+    def _calc_cashflow_quality_buffett(self, m: FinancialMetrics) -> Indicator:
+        """
+        현금흐름 질 (부채비율 연계) - 10점 만점
+        """
+        max_score = 10
 
-        value = (m.current_assets / m.current_liabilities) * 100
+        if m.total_equity <= 0:
+            return Indicator("부채비율", 999, 0, max_score, "F",
+                           "자본잠식", "100% 이하", "안정성")
 
-        if value >= 200:
-            score, grade = 100, "A"
-        elif value >= 150:
-            score, grade = 80, "B"
-        elif value >= 100:
-            score, grade = 60, "C"
-        elif value >= 80:
-            score, grade = 40, "D"
+        debt_ratio = (m.total_liabilities / m.total_equity) * 100
+
+        if debt_ratio <= 50:
+            score = 10  # 매우 건전
+        elif debt_ratio <= 100:
+            score = 8   # 건전
+        elif debt_ratio <= 150:
+            score = 5   # 보통
+        elif debt_ratio <= 200:
+            score = 2   # 높음
         else:
-            score, grade = 20, "F"
+            score = 0   # 위험
+
+        grade = self._score_to_grade(score, max_score)
 
         return Indicator(
-            name="유동비율",
-            value=round(value, 1),
+            name="부채비율",
+            value=round(debt_ratio, 1),
             score=score,
+            max_score=max_score,
             grade=grade,
-            description=f"단기채무 대비 {value:.1f}% 유동자산 보유",
-            good_criteria="150% 이상 안전, 100% 미만 위험"
+            description=f"자본 대비 부채 {debt_ratio:.1f}%",
+            good_criteria="100% 이하 건전, 50% 이하 우수",
+            category="안정성"
         )
 
-    def _calc_revenue_growth(self, current: FinancialMetrics, prev: FinancialMetrics) -> Indicator:
-        """매출 성장률 = (당기 - 전기) / 전기 × 100"""
-        if prev.revenue <= 0:
-            return Indicator("매출성장률", 0, 50, "C", "전기 데이터 없음", "10% 이상 성장이 양호")
+    def _score_to_grade(self, score: float, max_score: float) -> str:
+        """점수를 등급으로 변환"""
+        ratio = score / max_score if max_score > 0 else 0
+        if ratio >= 0.8:
+            return "A"
+        elif ratio >= 0.6:
+            return "B"
+        elif ratio >= 0.4:
+            return "C"
+        elif ratio >= 0.2:
+            return "D"
+        return "F"
 
-        value = ((current.revenue - prev.revenue) / prev.revenue) * 100
+    def _get_signal(self, total_score: float, filter_result: FilterResult) -> tuple[str, str]:
+        """매매 신호 결정"""
+        if not filter_result.passed:
+            reasons = ", ".join(filter_result.failed_reasons[:2])
+            return "투자부적격", f"필터링 탈락: {reasons}"
 
-        if value >= 20:
-            score, grade = 100, "A"
-        elif value >= 10:
-            score, grade = 80, "B"
-        elif value >= 5:
-            score, grade = 65, "C"
-        elif value >= 0:
-            score, grade = 45, "C"
-        elif value >= -10:
-            score, grade = 30, "D"
+        if total_score >= 80:
+            return "강력매수", "모든 지표가 버핏 기준을 충족합니다. 장기 투자 적합."
+        elif total_score >= 65:
+            return "매수", "대부분의 지표가 우수합니다. 투자 검토 권장."
+        elif total_score >= 50:
+            return "관망", "일부 지표가 부족합니다. 신중한 검토 필요."
+        elif total_score >= 35:
+            return "매도", "여러 지표가 부정적입니다. 투자 주의."
         else:
-            score, grade = 10, "F"
-
-        trend = "↑ 성장" if value > 0 else ("↓ 역성장" if value < 0 else "→ 유지")
-
-        return Indicator(
-            name="매출성장률",
-            value=round(value, 1),
-            score=score,
-            grade=grade,
-            description=f"전년 대비 {value:+.1f}% {trend}",
-            good_criteria="10% 이상 고성장, 0% 이상 양호",
-            trend=trend
-        )
-
-    def _calc_operating_growth(self, current: FinancialMetrics, prev: FinancialMetrics) -> Indicator:
-        """영업이익 성장률"""
-        if prev.operating_income <= 0:
-            if current.operating_income > 0:
-                return Indicator("영업이익성장률", 100, 100, "A", "흑자 전환", "15% 이상이 고성장")
-            return Indicator("영업이익성장률", 0, 30, "D", "적자 지속", "15% 이상이 고성장")
-
-        value = ((current.operating_income - prev.operating_income) / abs(prev.operating_income)) * 100
-
-        if value >= 30:
-            score, grade = 100, "A"
-        elif value >= 15:
-            score, grade = 85, "A"
-        elif value >= 5:
-            score, grade = 65, "B"
-        elif value >= 0:
-            score, grade = 50, "C"
-        elif value >= -15:
-            score, grade = 30, "D"
-        else:
-            score, grade = 10, "F"
-
-        trend = "↑ 성장" if value > 0 else ("↓ 감소" if value < 0 else "→ 유지")
-
-        return Indicator(
-            name="영업이익성장률",
-            value=round(value, 1),
-            score=score,
-            grade=grade,
-            description=f"전년 대비 {value:+.1f}% {trend}",
-            good_criteria="15% 이상 고성장, 0% 이상 양호",
-            trend=trend
-        )
-
-    def _calc_net_income_growth(self, current: FinancialMetrics, prev: FinancialMetrics) -> Indicator:
-        """순이익 성장률"""
-        if prev.net_income <= 0:
-            if current.net_income > 0:
-                return Indicator("순이익성장률", 100, 100, "A", "흑자 전환", "15% 이상이 고성장")
-            return Indicator("순이익성장률", 0, 20, "F", "적자 지속", "15% 이상이 고성장")
-
-        value = ((current.net_income - prev.net_income) / abs(prev.net_income)) * 100
-
-        if value >= 30:
-            score, grade = 100, "A"
-        elif value >= 15:
-            score, grade = 80, "A"
-        elif value >= 5:
-            score, grade = 65, "B"
-        elif value >= 0:
-            score, grade = 50, "C"
-        elif value >= -15:
-            score, grade = 30, "D"
-        else:
-            score, grade = 10, "F"
-
-        trend = "↑ 성장" if value > 0 else ("↓ 감소" if value < 0 else "→ 유지")
-
-        return Indicator(
-            name="순이익성장률",
-            value=round(value, 1),
-            score=score,
-            grade=grade,
-            description=f"전년 대비 {value:+.1f}% {trend}",
-            good_criteria="15% 이상 고성장, 0% 이상 양호",
-            trend=trend
-        )
-
-    def _calc_cash_flow_quality(self, m: FinancialMetrics) -> Indicator:
-        """현금흐름 질 = 영업CF / 순이익 (버핏 기준: >1)"""
-        if m.net_income <= 0:
-            if m.operating_cash_flow > 0:
-                return Indicator("현금흐름질", 999, 100, "A", "적자에도 현금창출", "1.0 이상이 우수")
-            return Indicator("현금흐름질", 0, 20, "F", "현금흐름 부정적", "1.0 이상이 우수")
-
-        value = m.operating_cash_flow / m.net_income
-
-        if value >= 1.5:
-            score, grade = 100, "A"
-        elif value >= 1.0:
-            score, grade = 85, "A"
-        elif value >= 0.8:
-            score, grade = 65, "B"
-        elif value >= 0.5:
-            score, grade = 45, "C"
-        elif value >= 0:
-            score, grade = 25, "D"
-        else:
-            score, grade = 0, "F"
-
-        return Indicator(
-            name="현금흐름질 (버핏지표)",
-            value=round(value, 2),
-            score=score,
-            grade=grade,
-            description=f"순이익 대비 {value:.2f}배 현금 창출",
-            good_criteria="1.0 이상 우수 (실제 현금이 들어옴)"
-        )
+            return "강력매도", "대부분의 지표가 미달입니다. 투자 회피 권고."
 
 
 # 싱글톤
-financial_analyzer = FinancialAnalyzer()
+financial_analyzer = BuffettAnalyzer()
