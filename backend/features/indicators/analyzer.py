@@ -284,6 +284,7 @@ class BuffettAnalyzer:
         statements = None
         actual_year = year
         actual_fs_div = fs_div
+        tried_combinations = []
 
         # fs_div 우선순위: CFS(연결) → OFS(개별)
         fs_divs_to_try = [fs_div]
@@ -298,7 +299,10 @@ class BuffettAnalyzer:
                     corp_code=corp_code, bsns_year=try_year, reprt_code="11011", fs_div=try_fs_div
                 )
 
-                if data.get("status") == "000" and data.get("list"):
+                status = data.get("status", "unknown")
+                tried_combinations.append(f"{try_fs_div}/{try_year}={status}")
+
+                if status == "000" and data.get("list"):
                     statements = data.get("list", [])
                     actual_year = try_year
                     actual_fs_div = try_fs_div
@@ -307,6 +311,8 @@ class BuffettAnalyzer:
                 break
 
         if not statements:
+            # 디버그: 모든 시도 조합 출력 (처음 10개 회사만)
+            # print(f"[ANALYZE] {corp_name}: No data after trying {tried_combinations}")
             return None
 
         # 3개년 지표 추출 (당기 데이터 없으면 전기/전전기에서 fallback)

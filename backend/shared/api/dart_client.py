@@ -5,9 +5,13 @@
 """
 
 import httpx
+import asyncio
 from typing import Any
 from app.config import get_settings
 from shared.cache import get_stored, store_data
+
+# API 호출 간격 (초) - Rate limiting 방지
+API_CALL_DELAY = 0.05  # 50ms
 
 
 class DartClient:
@@ -30,18 +34,56 @@ class DartClient:
         if stored:
             return stored
 
-        # 2. API 호출
+        # 2. API 호출 전 딜레이 (Rate limiting 방지)
+        await asyncio.sleep(API_CALL_DELAY)
+
         url = f"{self.base_url}/{endpoint}"
         request_params = self._get_params(**params)
 
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url, params=request_params, timeout=30.0)
-            response.raise_for_status()
-            data = response.json()
+        # 재시도 로직 (최대 3회)
+        max_retries = 3
+        last_error = None
 
-        # 3. 성공시 DB에 영구 저장
-        if data.get("status") == "000":
+        for attempt in range(max_retries):
+            try:
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(url, params=request_params, timeout=30.0)
+                    response.raise_for_status()
+                    data = response.json()
+                    break  # 성공 시 루프 탈출
+            except httpx.TimeoutException as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1.0 * (attempt + 1))  # 점진적 대기
+                    continue
+            except httpx.HTTPStatusError as e:
+                last_error = e
+                # 429 Too Many Requests: 재시도
+                if e.response.status_code == 429 and attempt < max_retries - 1:
+                    await asyncio.sleep(2.0 * (attempt + 1))
+                    continue
+                break
+            except Exception as e:
+                last_error = e
+                break
+        else:
+            # 모든 재시도 실패
+            print(f"[DART API ERROR] {endpoint} - {params}: {last_error}")
+            return {"status": "999", "message": f"Network error after {max_retries} retries: {str(last_error)}"}
+
+        # 3. API 응답 저장 (성공/실패 모두 캐시하여 반복 호출 방지)
+        status = data.get("status", "")
+        if status == "000":
+            # 성공: 영구 저장
             store_data(endpoint, params, data)
+        elif status in ("013", "020", "800", "900"):
+            # 데이터 없음/조회 기간 오류 등: 캐시하여 재호출 방지
+            # 013: 조회된 데이터 없음
+            # 020: 유효하지 않은 값
+            store_data(endpoint, params, data)
+        else:
+            # API 제한 등 일시적 오류: 로그만 남기고 캐시 안함
+            print(f"[DART API] {endpoint} status={status}: {data.get('message', '')}")
 
         return data
 
