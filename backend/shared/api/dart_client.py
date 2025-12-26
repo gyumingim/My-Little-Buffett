@@ -1,12 +1,23 @@
-"""OpenDART API 클라이언트"""
+"""OpenDART API 클라이언트 (SQLite 캐시 지원)"""
 
 import httpx
 from typing import Any
 from app.config import get_settings
+from shared.cache import get_cached, set_cached
+
+# 엔드포인트별 캐시 TTL (시간)
+CACHE_TTL = {
+    "fnlttSinglAcntAll.json": 168,  # 재무제표: 7일
+    "elestock.json": 24,             # 임원 주식: 1일
+    "piicDecsn.json": 24,            # 유상증자: 1일
+    "cvbdIsDecsn.json": 24,          # 전환사채: 1일
+    "tsstkAqDecsn.json": 24,         # 자기주식: 1일
+    "hyslrSttus.json": 168,          # 최대주주: 7일
+}
 
 
 class DartClient:
-    """OpenDART API 클라이언트"""
+    """OpenDART API 클라이언트 (캐시 지원)"""
 
     def __init__(self):
         self.settings = get_settings()
@@ -19,15 +30,29 @@ class DartClient:
         params.update(kwargs)
         return params
 
-    async def _request(self, endpoint: str, **params) -> dict[str, Any]:
-        """API 요청 수행"""
+    async def _request(self, endpoint: str, use_cache: bool = True, **params) -> dict[str, Any]:
+        """API 요청 수행 (캐시 우선)"""
+        # 캐시 확인
+        if use_cache:
+            cached = get_cached(endpoint, params)
+            if cached:
+                return cached
+
+        # API 호출
         url = f"{self.base_url}/{endpoint}"
         request_params = self._get_params(**params)
 
         async with httpx.AsyncClient() as client:
             response = await client.get(url, params=request_params, timeout=30.0)
             response.raise_for_status()
-            return response.json()
+            data = response.json()
+
+        # 캐시 저장
+        if use_cache and data.get("status") == "000":
+            ttl = CACHE_TTL.get(endpoint, 24)
+            set_cached(endpoint, params, data, ttl_hours=ttl)
+
+        return data
 
     # ========================
     # 단일회사 전체 재무제표
