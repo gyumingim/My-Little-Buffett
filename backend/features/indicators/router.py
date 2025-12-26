@@ -426,3 +426,71 @@ async def get_top_picks(
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ========================
+# 디버그 API
+# ========================
+
+@router.get("/v2/debug/{corp_code}")
+async def debug_analysis(
+    corp_code: str,
+    bsns_year: str = Query(..., description="사업연도"),
+    fs_div: str = Query("CFS", description="재무제표 구분"),
+):
+    """
+    디버깅용: DART API 원본 응답과 파싱 결과 확인
+    """
+    from shared.api.dart_client import dart_client
+    from .analyzer import extract_metrics
+
+    # DART API 호출
+    data = await dart_client.get_financial_statements(
+        corp_code=corp_code, bsns_year=bsns_year, reprt_code="11011", fs_div=fs_div
+    )
+
+    if data.get("status") != "000":
+        return BaseResponse(
+            success=False,
+            message=f"DART API 오류: {data.get('message')}",
+            data={"status": data.get("status"), "message": data.get("message")}
+        )
+
+    statements = data.get("list", [])
+
+    # 주요 항목 추출 (IS, BS, CF)
+    key_items = []
+    for item in statements:
+        sj_div = item.get("sj_div", "")
+        account_nm = item.get("account_nm", "")
+        thstrm = item.get("thstrm_amount", "")
+
+        # 주요 항목만 필터
+        if sj_div == "IS" and any(kw in account_nm for kw in ["매출", "영업이익", "순이익", "손익"]):
+            key_items.append({"type": "IS", "name": account_nm, "amount": thstrm})
+        elif sj_div == "BS" and any(kw in account_nm for kw in ["자산", "부채", "자본"]):
+            key_items.append({"type": "BS", "name": account_nm, "amount": thstrm})
+        elif sj_div == "CF" and any(kw in account_nm for kw in ["영업활동", "투자활동", "재무활동"]):
+            key_items.append({"type": "CF", "name": account_nm, "amount": thstrm})
+
+    # 파싱 결과
+    metrics = extract_metrics(statements, "thstrm")
+
+    return BaseResponse(
+        success=True,
+        message=f"DART API 원본 {len(statements)}개 항목, 주요 항목 {len(key_items)}개",
+        data={
+            "dart_status": data.get("status"),
+            "total_items": len(statements),
+            "key_items": key_items[:30],  # 상위 30개만
+            "parsed_metrics": {
+                "revenue": metrics.revenue,
+                "operating_income": metrics.operating_income,
+                "net_income": metrics.net_income,
+                "total_assets": metrics.total_assets,
+                "total_liabilities": metrics.total_liabilities,
+                "total_equity": metrics.total_equity,
+                "operating_cash_flow": metrics.operating_cash_flow,
+            }
+        }
+    )

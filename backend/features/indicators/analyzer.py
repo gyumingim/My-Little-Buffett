@@ -66,28 +66,45 @@ def extract_metrics(statements: list, term: str = "thstrm") -> FinancialMetrics:
 
         # account_id에서 ifrs- 또는 ifrs_full_ prefix 처리
         account_id_lower = account_id.lower()
+        account_nm_lower = account_nm.lower()
 
         # 손익계산서 (IS)
         if sj_div == "IS":
-            if "revenue" in account_id_lower or "매출액" in account_nm or account_nm == "수익(매출액)":
+            # 매출액
+            if "revenue" in account_id_lower or "매출액" in account_nm or account_nm == "수익(매출액)" or "매출" == account_nm:
                 m.revenue = max(m.revenue, amount)
+            # 매출원가
             elif "costofsales" in account_id_lower or "매출원가" in account_nm:
                 m.cost_of_sales = max(m.cost_of_sales, amount)
+            # 매출총이익
             elif "grossprofit" in account_id_lower or "매출총이익" in account_nm:
                 m.gross_profit = max(m.gross_profit, amount)
+            # 영업이익
             elif "operatingincome" in account_id_lower or "영업이익" in account_nm or "영업손익" in account_nm:
                 m.operating_income = max(m.operating_income, amount)
+            # 금융비용/이자비용
             elif "금융비용" in account_nm or "이자비용" in account_nm or "financecost" in account_id_lower:
                 m.finance_cost = max(m.finance_cost, amount)
-            elif "profitloss" in account_id_lower or "당기순이익" in account_nm or "당기순손익" in account_nm or account_nm == "분기순이익":
+            # 당기순이익 (다양한 형태)
+            elif "profitloss" in account_id_lower:
+                m.net_income = max(m.net_income, amount)
+            elif "당기순이익" in account_nm or "당기순손익" in account_nm:
+                m.net_income = max(m.net_income, amount)
+            elif "분기순이익" in account_nm or "반기순이익" in account_nm:
+                m.net_income = max(m.net_income, amount)
+            elif "지배기업" in account_nm and "순이익" in account_nm:
+                m.net_income = max(m.net_income, amount)
+            elif "지배기업" in account_nm and "손익" in account_nm:
+                m.net_income = max(m.net_income, amount)
+            elif account_nm in ["순이익", "순손익", "당기이익", "당기손익"]:
                 m.net_income = max(m.net_income, amount)
 
         # 재무상태표 (BS)
         elif sj_div == "BS":
             # 자산총계
-            if "assets" in account_id_lower and "current" not in account_id_lower:
+            if "assets" in account_id_lower and "current" not in account_id_lower and "net" not in account_id_lower:
                 m.total_assets = max(m.total_assets, amount)
-            elif "자산총계" in account_nm or account_nm == "자산":
+            elif "자산총계" in account_nm or account_nm == "자산" or account_nm == "자산 계":
                 m.total_assets = max(m.total_assets, amount)
             # 유동자산
             elif "currentassets" in account_id_lower or "유동자산" in account_nm:
@@ -95,19 +112,21 @@ def extract_metrics(statements: list, term: str = "thstrm") -> FinancialMetrics:
             # 부채총계
             elif "liabilities" in account_id_lower and "current" not in account_id_lower:
                 m.total_liabilities = max(m.total_liabilities, amount)
-            elif "부채총계" in account_nm or account_nm == "부채":
+            elif "부채총계" in account_nm or account_nm == "부채" or account_nm == "부채 계":
                 m.total_liabilities = max(m.total_liabilities, amount)
             # 유동부채
             elif "currentliabilities" in account_id_lower or "유동부채" in account_nm:
                 m.current_liabilities = max(m.current_liabilities, amount)
             # 자본총계 (다양한 형태 처리)
-            elif "equity" in account_id_lower and "retained" not in account_id_lower:
+            elif "equity" in account_id_lower and "retained" not in account_id_lower and "minority" not in account_id_lower:
                 m.total_equity = max(m.total_equity, amount)
             elif "자본총계" in account_nm or "자본 총계" in account_nm:
                 m.total_equity = max(m.total_equity, amount)
-            elif account_nm == "자본" or account_nm == "자본계":
+            elif account_nm in ["자본", "자본계", "자본 계"]:
                 m.total_equity = max(m.total_equity, amount)
-            elif "지배기업" in account_nm and "지분" in account_nm:
+            elif "지배기업" in account_nm and ("지분" in account_nm or "자본" in account_nm):
+                m.total_equity = max(m.total_equity, amount)
+            elif "지배주주지분" in account_nm or "지배기업소유주지분" in account_nm:
                 m.total_equity = max(m.total_equity, amount)
             # 이익잉여금
             elif "retainedearnings" in account_id_lower or "이익잉여금" in account_nm:
