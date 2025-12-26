@@ -78,7 +78,7 @@ async def get_analysis_v2(
 async def screener_v2(
     year: str = Query(..., description="사업연도"),
     fs_div: str = Query("CFS", description="재무제표 구분"),
-    limit: int = Query(50, description="조회 개수", ge=1, le=300),
+    limit: int = Query(100, description="조회 개수", ge=1, le=500),
 ):
     """
     버핏형 우량주 스크리너

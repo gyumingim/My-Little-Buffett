@@ -81,18 +81,18 @@ def extract_metrics(statements: list, term: str = "thstrm") -> FinancialMetrics:
 
         # 재무상태표 (BS)
         elif sj_div == "BS":
-            if account_id == "ifrs_Assets":
-                m.total_assets = amount
-            elif account_id == "ifrs_CurrentAssets":
-                m.current_assets = amount
-            elif account_id == "ifrs_Liabilities":
-                m.total_liabilities = amount
-            elif account_id == "ifrs_CurrentLiabilities":
-                m.current_liabilities = amount
-            elif account_id == "ifrs_Equity":
-                m.total_equity = amount
-            elif account_id == "ifrs_RetainedEarnings":
-                m.retained_earnings = amount
+            if account_id == "ifrs_Assets" or "자산총계" in account_nm:
+                m.total_assets = max(m.total_assets, amount)
+            elif account_id == "ifrs_CurrentAssets" or "유동자산" in account_nm:
+                m.current_assets = max(m.current_assets, amount)
+            elif account_id == "ifrs_Liabilities" or "부채총계" in account_nm:
+                m.total_liabilities = max(m.total_liabilities, amount)
+            elif account_id == "ifrs_CurrentLiabilities" or "유동부채" in account_nm:
+                m.current_liabilities = max(m.current_liabilities, amount)
+            elif account_id == "ifrs_Equity" or "자본총계" in account_nm or account_nm == "자본":
+                m.total_equity = max(m.total_equity, amount)
+            elif account_id == "ifrs_RetainedEarnings" or "이익잉여금" in account_nm:
+                m.retained_earnings = max(m.retained_earnings, amount)
 
         # 현금흐름표 (CF)
         elif sj_div == "CF":
