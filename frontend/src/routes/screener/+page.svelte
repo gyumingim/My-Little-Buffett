@@ -81,18 +81,18 @@
   }
 
   function getSignalColor(signal: string): string {
-    switch (signal) {
-      case '강력매수': return 'signal-strong-buy';
-      case '매수': return 'signal-buy';
-      case '관망': return 'signal-hold';
-      case '매도': return 'signal-sell';
-      case '강력매도': return 'signal-strong-sell';
-      case '투자부적격': return 'signal-disqualified';
-      default: return 'signal-neutral';
-    }
+    if (signal.includes('S급') || signal.includes('강력매수')) return 'signal-strong-buy';
+    if (signal.includes('A급') && signal.includes('매수')) return 'signal-buy';
+    if (signal.includes('B급') && signal.includes('매수')) return 'signal-buy-weak';
+    if (signal.includes('관망')) return 'signal-hold';
+    if (signal.includes('D급') || signal.includes('매도')) return 'signal-sell';
+    if (signal.includes('F급') || signal.includes('회피')) return 'signal-strong-sell';
+    if (signal.includes('투자부적격')) return 'signal-disqualified';
+    return 'signal-neutral';
   }
 
   function getScoreColor(score: number): string {
+    if (score >= 90) return 'score-s';
     if (score >= 80) return 'score-excellent';
     if (score >= 65) return 'score-good';
     if (score >= 50) return 'score-average';
@@ -101,14 +101,15 @@
   }
 
   function getGradeClass(grade: string): string {
-    switch (grade) {
-      case 'A': return 'grade-a';
-      case 'B': return 'grade-b';
-      case 'C': return 'grade-c';
-      case 'D': return 'grade-d';
-      case 'F': return 'grade-f';
-      default: return '';
-    }
+    // 세분화된 등급 (S, A+, A, A-, B+, B, B-, C+, C, C-, D+, D, D-, E+, E, E-, F+, F, F-)
+    if (grade === 'S') return 'grade-s';
+    if (grade.startsWith('A')) return 'grade-a';
+    if (grade.startsWith('B')) return 'grade-b';
+    if (grade.startsWith('C')) return 'grade-c';
+    if (grade.startsWith('D')) return 'grade-d';
+    if (grade.startsWith('E')) return 'grade-e';
+    if (grade.startsWith('F')) return 'grade-f';
+    return '';
   }
 </script>
 
@@ -202,12 +203,17 @@
 
     <!-- 채점 기준 안내 -->
     <div class="scoring-legend">
-      <h4>버핏 채점 기준 (100점)</h4>
+      <h4>버핏 채점 기준 (기본 100점 + 보완 45점)</h4>
       <div class="legend-items">
         <span class="legend-item roe">ROE 30점</span>
         <span class="legend-item ocf">현금창출 25점</span>
         <span class="legend-item growth">성장성 20점</span>
         <span class="legend-item safety">안정성 25점</span>
+        <span class="legend-divider">|</span>
+        <span class="legend-item roic">ROIC 15점</span>
+        <span class="legend-item margin">영업이익률 10점</span>
+        <span class="legend-item retention">유보율 10점</span>
+        <span class="legend-item stability">안정성 10점</span>
       </div>
     </div>
 
@@ -248,9 +254,9 @@
                 <td class="signal-col">
                   <span class="signal-badge {getSignalColor(stock.signal)}">{stock.signal}</span>
                 </td>
-                {#each Object.entries(stock.indicators) as [name, ind]}
+                {#each Object.entries(stock.indicators).slice(0, 5) as [name, ind]}
                   <td class="indicator-col">
-                    <span class="grade-mini {getGradeClass(ind.grade)}">{ind.grade}</span>
+                    <span class="grade-mini {getGradeClass(ind.grade)}" title="{name}: {ind.value}">{ind.grade}</span>
                   </td>
                 {/each}
               </tr>
@@ -437,6 +443,11 @@
   .legend-item.ocf { background: #d1fae5; color: #047857; }
   .legend-item.growth { background: #dbeafe; color: #1d4ed8; }
   .legend-item.safety { background: #f3e8ff; color: #7c3aed; }
+  .legend-item.roic { background: #fce7f3; color: #be185d; }
+  .legend-item.margin { background: #e0e7ff; color: #4338ca; }
+  .legend-item.retention { background: #ccfbf1; color: #0d9488; }
+  .legend-item.stability { background: #fef9c3; color: #a16207; }
+  .legend-divider { color: var(--text-muted); }
 
   /* 결과 섹션 */
   .results-section h2 {
@@ -545,6 +556,7 @@
   }
 
   /* 점수/등급 색상 */
+  .score-s { background: linear-gradient(135deg, #fbbf24, #f59e0b); color: white; }
   .score-excellent { background: #dcfce7; color: #166534; }
   .score-good { background: #d1fae5; color: #047857; }
   .score-average { background: #fef3c7; color: #92400e; }
@@ -553,15 +565,18 @@
 
   .signal-strong-buy { background: #dcfce7; color: #166534; }
   .signal-buy { background: #d1fae5; color: #047857; }
+  .signal-buy-weak { background: #ecfdf5; color: #059669; }
   .signal-hold { background: #fef3c7; color: #92400e; }
   .signal-sell { background: #fee2e2; color: #991b1b; }
   .signal-strong-sell { background: #fecaca; color: #7f1d1d; }
   .signal-disqualified { background: #f3f4f6; color: #6b7280; }
 
+  .grade-s { background: linear-gradient(135deg, #fbbf24, #f59e0b); color: white; }
   .grade-a { background: #dcfce7; color: #166534; }
   .grade-b { background: #d1fae5; color: #047857; }
   .grade-c { background: #fef3c7; color: #92400e; }
   .grade-d { background: #ffedd5; color: #9a3412; }
+  .grade-e { background: #fed7aa; color: #c2410c; }
   .grade-f { background: #fee2e2; color: #991b1b; }
 
   /* 필터링 탈락 섹션 */

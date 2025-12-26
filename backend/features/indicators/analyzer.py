@@ -32,15 +32,48 @@ class FinancialMetrics:
     # 재무상태표 (BS)
     total_assets: float = 0  # 자산총계
     current_assets: float = 0  # 유동자산
+    cash_and_equivalents: float = 0  # 현금및현금성자산
     total_liabilities: float = 0  # 부채총계
     current_liabilities: float = 0  # 유동부채
     total_equity: float = 0  # 자본총계
+    capital_stock: float = 0  # 자본금
     retained_earnings: float = 0  # 이익잉여금
 
     # 현금흐름표 (CF)
     operating_cash_flow: float = 0  # 영업활동 현금흐름
     investing_cash_flow: float = 0  # 투자활동 현금흐름
     financing_cash_flow: float = 0  # 재무활동 현금흐름
+
+    # 계산된 비율 (편의용)
+    @property
+    def operating_margin(self) -> float:
+        """영업이익률 = 영업이익 / 매출액"""
+        return (self.operating_income / self.revenue * 100) if self.revenue > 0 else 0
+
+    @property
+    def roe(self) -> float:
+        """ROE = 순이익 / 자본총계"""
+        return (self.net_income / self.total_equity * 100) if self.total_equity > 0 else 0
+
+    @property
+    def roic(self) -> float:
+        """ROIC = 세후영업이익 / 투하자본 (근사치)"""
+        # 세후영업이익 ≈ 영업이익 * 0.75 (법인세 25% 가정)
+        nopat = self.operating_income * 0.75
+        # 투하자본 = 자본총계 + 유이자부채 - 현금성자산
+        # 유이자부채 ≈ 총부채 - 유동부채의 일부 (단순화)
+        invested_capital = self.total_equity + (self.total_liabilities * 0.5) - self.cash_and_equivalents
+        return (nopat / invested_capital * 100) if invested_capital > 0 else 0
+
+    @property
+    def debt_ratio(self) -> float:
+        """부채비율 = 부채총계 / 자본총계"""
+        return (self.total_liabilities / self.total_equity * 100) if self.total_equity > 0 else 999
+
+    @property
+    def retention_ratio(self) -> float:
+        """유보율 = 이익잉여금 / 자본금"""
+        return (self.retained_earnings / self.capital_stock * 100) if self.capital_stock > 0 else 0
 
 
 def parse_amount(value: str | None) -> float:
@@ -120,6 +153,13 @@ def extract_metrics(statements: list, term: str = "thstrm") -> FinancialMetrics:
             # 유동자산
             elif "currentassets" in account_id_lower or "유동자산" in account_nm:
                 m.current_assets = max(m.current_assets, amount)
+            # 현금및현금성자산
+            elif "cash" in account_id_lower and "equivalent" in account_id_lower:
+                m.cash_and_equivalents = max(m.cash_and_equivalents, amount)
+            elif "현금및현금성자산" in account_nm_clean or "현금및현금등가물" in account_nm_clean:
+                m.cash_and_equivalents = max(m.cash_and_equivalents, amount)
+            elif account_nm_clean in ["현금", "현금및예치금"]:
+                m.cash_and_equivalents = max(m.cash_and_equivalents, amount)
             # 부채총계 (정확한 매칭)
             elif "liabilities" in account_id_lower and "current" not in account_id_lower and "asset" not in account_id_lower:
                 m.total_liabilities = max(m.total_liabilities, amount)
@@ -146,6 +186,13 @@ def extract_metrics(statements: list, term: str = "thstrm") -> FinancialMetrics:
             # 이익잉여금
             elif "retainedearnings" in account_id_lower or "이익잉여금" in account_nm:
                 m.retained_earnings = max(m.retained_earnings, amount)
+            # 자본금
+            elif "issuedcapital" in account_id_lower or "sharecapital" in account_id_lower:
+                m.capital_stock = max(m.capital_stock, amount)
+            elif account_nm_clean in ["자본금", "보통주자본금", "납입자본"]:
+                m.capital_stock = max(m.capital_stock, amount)
+            elif "자본금" in account_nm and "잉여금" not in account_nm:
+                m.capital_stock = max(m.capital_stock, amount)
 
         # 현금흐름표 (CF)
         elif sj_div == "CF":
@@ -232,21 +279,31 @@ class BuffettAnalyzer:
     """버핏형 가치투자 분석기"""
 
     async def analyze(self, corp_code: str, corp_name: str, year: str, fs_div: str = "CFS") -> AnalysisResult | None:
-        """종합 분석 수행 (데이터 없으면 최대 3년 전까지 fallback)"""
+        """종합 분석 수행 (데이터 없으면 최대 3년 전까지 fallback, CFS→OFS fallback)"""
 
-        # 연도 fallback 시도 (요청 연도 → 1년 전 → 2년 전 → 3년 전)
         statements = None
         actual_year = year
+        actual_fs_div = fs_div
 
-        for year_offset in range(4):  # 0, 1, 2, 3년 전
-            try_year = str(int(year) - year_offset)
-            data = await dart_client.get_financial_statements(
-                corp_code=corp_code, bsns_year=try_year, reprt_code="11011", fs_div=fs_div
-            )
+        # fs_div 우선순위: CFS(연결) → OFS(개별)
+        fs_divs_to_try = [fs_div]
+        if fs_div == "CFS":
+            fs_divs_to_try.append("OFS")  # 연결 없으면 개별로 시도
 
-            if data.get("status") == "000" and data.get("list"):
-                statements = data.get("list", [])
-                actual_year = try_year
+        # 연도 + 재무제표 유형 조합으로 시도
+        for try_fs_div in fs_divs_to_try:
+            for year_offset in range(4):  # 0, 1, 2, 3년 전
+                try_year = str(int(year) - year_offset)
+                data = await dart_client.get_financial_statements(
+                    corp_code=corp_code, bsns_year=try_year, reprt_code="11011", fs_div=try_fs_div
+                )
+
+                if data.get("status") == "000" and data.get("list"):
+                    statements = data.get("list", [])
+                    actual_year = try_year
+                    actual_fs_div = try_fs_div
+                    break
+            if statements:
                 break
 
         if not statements:
@@ -283,28 +340,61 @@ class BuffettAnalyzer:
         safety_indicator = self._calc_interest_coverage_buffett(current)
         indicators.append(safety_indicator)
 
-        # (5) 현금흐름 질 - 영업CF/순이익 (10점)
+        # (5) 현금흐름 질 - 부채비율 (10점)
         cfq_indicator = self._calc_cashflow_quality_buffett(current)
         indicators.append(cfq_indicator)
 
+        # ========================================
+        # 보완 지표 (기관급 분석)
+        # ========================================
+
+        # (6) ROIC - 투하자본이익률 (15점)
+        roic_indicator = self._calc_roic(current)
+        indicators.append(roic_indicator)
+
+        # (7) 영업이익률 (10점)
+        margin_indicator = self._calc_operating_margin(current)
+        indicators.append(margin_indicator)
+
+        # (8) 유보율 (10점)
+        retention_indicator = self._calc_retention_ratio(current)
+        indicators.append(retention_indicator)
+
+        # (9) 영업이익률 안정성 (10점)
+        stability_indicator = self._calc_margin_stability(current, previous, before_prev)
+        indicators.append(stability_indicator)
+
+        # 기본 5대 지표만으로 점수 계산 (100점 만점)
+        # 보완 지표는 추가 참고용 (+45점)
         # 필터 통과 못하면 0점
         if not filter_result.passed:
             total_score = 0.0
         else:
-            total_score = sum(ind.score for ind in indicators)
+            # 기본 지표: 처음 5개 (100점 만점)
+            base_score = sum(ind.score for ind in indicators[:5])
+            # 보완 지표: 6~9번 (45점 만점)
+            bonus_score = sum(ind.score for ind in indicators[5:])
+            # 총점: 기본 + 보완 가중치 적용 (보완은 30% 반영)
+            total_score = base_score + (bonus_score * 0.3)
 
         # 신호 결정
         signal, recommendation = self._get_signal(total_score, filter_result)
 
         # fallback 발생 시 recommendation에 표시
+        fallback_info = []
         if actual_year != year:
-            recommendation = f"[{actual_year}년 데이터 사용] " + recommendation
+            fallback_info.append(f"{actual_year}년")
+        if actual_fs_div != fs_div:
+            fs_label = "개별" if actual_fs_div == "OFS" else "연결"
+            fallback_info.append(f"{fs_label}재무제표")
+        if fallback_info:
+            recommendation = f"[{', '.join(fallback_info)} 사용] " + recommendation
 
         return AnalysisResult(
             corp_code=corp_code,
             corp_name=corp_name,
             year=actual_year,  # 실제 데이터가 있는 연도
-            fs_div=fs_div,
+            fs_div=actual_fs_div,  # 실제 사용된 재무제표 유형
             indicators=indicators,
             total_score=round(total_score, 1),
             signal=signal,
@@ -545,6 +635,155 @@ class BuffettAnalyzer:
             description=f"자본 대비 부채 {debt_ratio:.1f}%",
             good_criteria="100% 이하 건전, 50% 이하 우수",
             category="안정성"
+        )
+
+    # ============================================
+    # 보완 지표 (Gemini 추천)
+    # ============================================
+
+    def _calc_roic(self, m: FinancialMetrics) -> Indicator:
+        """
+        ROIC (투하자본이익률) - 15점 만점
+        기관 기준: 15% 이상 우수
+        """
+        max_score = 15
+        roic = m.roic  # property 사용
+
+        if roic >= 20:
+            score = 15  # 탁월
+        elif roic >= 15:
+            score = 12  # 우수
+        elif roic >= 10:
+            score = 8   # 양호
+        elif roic >= 5:
+            score = 4   # 보통
+        else:
+            score = 0   # 미흡
+
+        grade = self._score_to_grade(score, max_score)
+
+        return Indicator(
+            name="ROIC (투하자본이익률)",
+            value=round(roic, 1),
+            score=score,
+            max_score=max_score,
+            grade=grade,
+            description=f"투하자본 대비 {roic:.1f}% 수익" if roic > 0 else "수익 미흡",
+            good_criteria="15% 이상 (순수 영업 실력)",
+            category="수익성"
+        )
+
+    def _calc_operating_margin(self, m: FinancialMetrics) -> Indicator:
+        """
+        영업이익률 - 10점 만점
+        가격 결정력(해자) 지표
+        """
+        max_score = 10
+        margin = m.operating_margin  # property 사용
+
+        if margin >= 20:
+            score = 10  # 탁월한 해자
+        elif margin >= 15:
+            score = 8   # 우수
+        elif margin >= 10:
+            score = 6   # 양호
+        elif margin >= 5:
+            score = 3   # 보통
+        else:
+            score = 0   # 미흡
+
+        grade = self._score_to_grade(score, max_score)
+
+        return Indicator(
+            name="영업이익률",
+            value=round(margin, 1),
+            score=score,
+            max_score=max_score,
+            grade=grade,
+            description=f"매출 대비 {margin:.1f}% 영업이익" if margin > 0 else "영업이익 없음",
+            good_criteria="15% 이상 (가격 결정력 보유)",
+            category="수익성"
+        )
+
+    def _calc_retention_ratio(self, m: FinancialMetrics) -> Indicator:
+        """
+        유보율 - 10점 만점
+        위기 대응 능력 지표
+        """
+        max_score = 10
+        ratio = m.retention_ratio  # property 사용
+
+        if ratio >= 1000:
+            score = 10  # 매우 우수
+        elif ratio >= 500:
+            score = 8   # 우수 (기관 기준)
+        elif ratio >= 300:
+            score = 5   # 양호
+        elif ratio >= 100:
+            score = 2   # 보통
+        else:
+            score = 0   # 미흡
+
+        grade = self._score_to_grade(score, max_score)
+
+        return Indicator(
+            name="유보율",
+            value=round(ratio, 1),
+            score=score,
+            max_score=max_score,
+            grade=grade,
+            description=f"자본금 대비 {ratio:.0f}% 유보" if ratio > 0 else "유보금 없음",
+            good_criteria="500% 이상 (위기 대응력 우수)",
+            category="안정성"
+        )
+
+    def _calc_margin_stability(self, curr: FinancialMetrics, prev: FinancialMetrics, bprev: FinancialMetrics) -> Indicator:
+        """
+        영업이익률 안정성 - 10점 만점
+        3년간 영업이익률 변동성 (해자 지속성)
+        """
+        max_score = 10
+
+        margins = []
+        if curr.revenue > 0:
+            margins.append(curr.operating_margin)
+        if prev.revenue > 0:
+            margins.append(prev.operating_margin)
+        if bprev.revenue > 0:
+            margins.append(bprev.operating_margin)
+
+        if len(margins) < 2:
+            return Indicator("영업이익률 안정성", 0, 5, max_score, "C",
+                           "데이터 부족", "3년 연속 10% 이상 유지", "해자")
+
+        avg_margin = sum(margins) / len(margins)
+        # 표준편차 계산
+        variance = sum((m - avg_margin) ** 2 for m in margins) / len(margins)
+        std_dev = variance ** 0.5
+
+        # 평균 마진이 10% 이상이고 변동성이 낮으면 해자 보유
+        if avg_margin >= 10 and std_dev < 3:
+            score = 10  # 안정적 해자
+        elif avg_margin >= 10 and std_dev < 5:
+            score = 8   # 해자 보유
+        elif avg_margin >= 7 and std_dev < 5:
+            score = 5   # 양호
+        elif avg_margin >= 5:
+            score = 3   # 보통
+        else:
+            score = 0   # 해자 없음
+
+        grade = self._score_to_grade(score, max_score)
+
+        return Indicator(
+            name="영업이익률 안정성",
+            value=round(avg_margin, 1),
+            score=score,
+            max_score=max_score,
+            grade=grade,
+            description=f"3년 평균 {avg_margin:.1f}% (변동성 {std_dev:.1f}%p)",
+            good_criteria="3년 연속 10% 이상 + 낮은 변동성",
+            category="해자"
         )
 
     def _score_to_grade(self, score: float, max_score: float) -> str:
