@@ -222,16 +222,21 @@ async def refresh_screener(
     """
     스크리너 데이터 새로고침 (기존 캐시 삭제 후 재분석)
     """
+    import time
+    start_time = time.time()
+
     # 해당 연도/재무제표 캐시 삭제
     clear_buffett_analysis(year, fs_div)
+    print(f"[REFRESH] Starting analysis for {year}/{fs_div}, limit={limit}")
 
     # 새로 분석 (use_cache=False로 호출)
     results = []
     filtered_out = []
     no_data_corps = []
+    error_corps = []
     saved_count = 0
 
-    for corp_code, corp_name, stock_code, sector in COMPANIES[:limit]:
+    for i, (corp_code, corp_name, stock_code, sector) in enumerate(COMPANIES[:limit]):
         try:
             result = await financial_analyzer.analyze(corp_code, corp_name, year, fs_div)
             if result:
@@ -267,12 +272,22 @@ async def refresh_screener(
                     filtered_out.append(corp_name)
             else:
                 no_data_corps.append(corp_name)
+
+            # 진행 상황 로깅 (매 50개마다)
+            if (i + 1) % 50 == 0:
+                elapsed = time.time() - start_time
+                print(f"[REFRESH] Progress: {i+1}/{limit} ({elapsed:.1f}s) - saved={saved_count}, no_data={len(no_data_corps)}")
+
         except Exception as e:
-            no_data_corps.append(f"{corp_name}(오류)")
+            error_corps.append(f"{corp_name}({str(e)[:50]})")
+            print(f"[REFRESH ERROR] {corp_name}: {e}")
+
+    elapsed = time.time() - start_time
+    print(f"[REFRESH] Complete: {saved_count} saved, {len(no_data_corps)} no_data, {len(error_corps)} errors in {elapsed:.1f}s")
 
     return BaseResponse(
         success=True,
-        message=f"{saved_count}개 기업 분석 완료 및 DB 저장",
+        message=f"{saved_count}개 기업 분석 완료 및 DB 저장 ({elapsed:.1f}초)",
         data={
             "year": year,
             "fs_div": fs_div,
@@ -280,6 +295,10 @@ async def refresh_screener(
             "passed_count": len(results),
             "filtered_count": len(filtered_out),
             "no_data_count": len(no_data_corps),
+            "error_count": len(error_corps),
+            "elapsed_seconds": round(elapsed, 1),
+            "no_data_corps": no_data_corps[:30],  # 처음 30개만
+            "error_corps": error_corps[:10],  # 처음 10개만
         },
     )
 
