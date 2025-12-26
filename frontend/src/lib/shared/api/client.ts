@@ -146,6 +146,43 @@ export const api = {
   async getTopPicks(year: string, fsDiv: string = 'OFS') {
     const params = new URLSearchParams({ year, fs_div: fsDiv });
     return request(`/indicators/screener/top-picks?${params}`);
+  },
+
+  /**
+   * 기업 검색
+   */
+  async searchCompanies(query: string, limit: number = 10) {
+    const params = new URLSearchParams({ q: query, limit: limit.toString() });
+    return request(`/companies/search?${params}`);
+  },
+
+  /**
+   * 전체 기업 목록
+   */
+  async getCompanyList(sector?: string) {
+    const params = new URLSearchParams();
+    if (sector) params.set('sector', sector);
+    return request(`/companies/list?${params}`);
+  },
+
+  /**
+   * 업종 목록
+   */
+  async getSectors() {
+    return request('/companies/sectors');
+  },
+
+  /**
+   * 기업 비교
+   */
+  async compareCompanies(corpCode1: string, corpCode2: string, bsnsYear: string, fsDiv: string = 'OFS') {
+    const params = new URLSearchParams({
+      corp_code_1: corpCode1,
+      corp_code_2: corpCode2,
+      bsns_year: bsnsYear,
+      fs_div: fsDiv
+    });
+    return request(`/companies/compare?${params}`);
   }
 };
 

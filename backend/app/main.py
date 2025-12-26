@@ -5,6 +5,7 @@ from app.config import get_settings
 from features.indicators.router import router as indicators_router
 from features.disclosures.router import router as disclosures_router
 from features.financial_statements.router import router as statements_router
+from features.companies.router import router as companies_router
 
 settings = get_settings()
 
@@ -27,6 +28,7 @@ app.add_middleware(
 app.include_router(indicators_router, prefix="/api/indicators", tags=["indicators"])
 app.include_router(disclosures_router, prefix="/api/disclosures", tags=["disclosures"])
 app.include_router(statements_router, prefix="/api/statements", tags=["statements"])
+app.include_router(companies_router, prefix="/api/companies", tags=["companies"])
 
 
 @app.get("/")

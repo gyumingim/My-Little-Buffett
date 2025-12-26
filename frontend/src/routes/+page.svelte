@@ -1,5 +1,6 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
+  import { api } from '$shared/api';
   import { Button, Card, Input } from '$shared/ui';
 
   let corpCode = '';
@@ -7,27 +8,43 @@
   let bsnsYear = new Date().getFullYear().toString();
   let fsDiv = 'OFS';
 
+  let searchQuery = '';
+  let searchResults: { corp_code: string; corp_name: string; stock_code: string; sector: string }[] = [];
+  let showResults = false;
+  let searchTimeout: ReturnType<typeof setTimeout>;
+
   const years = Array.from({ length: 5 }, (_, i) => (new Date().getFullYear() - i).toString());
 
-  const sampleCompanies = [
-    { code: '00126380', name: '삼성전자' },
-    { code: '00164742', name: '현대자동차' },
-    { code: '00401731', name: 'SK하이닉스' },
-    { code: '00155355', name: '네이버' },
-    { code: '00181710', name: '카카오' },
-  ];
+  async function handleSearch() {
+    if (searchQuery.length < 1) {
+      searchResults = [];
+      showResults = false;
+      return;
+    }
+
+    clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(async () => {
+      const res = await api.searchCompanies(searchQuery, 8);
+      if (res.success && res.data) {
+        searchResults = res.data as typeof searchResults;
+        showResults = searchResults.length > 0;
+      }
+    }, 200);
+  }
+
+  function selectCompany(company: typeof searchResults[0]) {
+    corpCode = company.corp_code;
+    corpName = company.corp_name;
+    searchQuery = company.corp_name;
+    showResults = false;
+  }
 
   function handleAnalysis() {
     if (!corpCode || !corpName) {
-      alert('기업 고유번호와 기업명을 입력해주세요.');
+      alert('기업을 선택해주세요.');
       return;
     }
     goto(`/company/${corpCode}?name=${encodeURIComponent(corpName)}&year=${bsnsYear}&fs_div=${fsDiv}`);
-  }
-
-  function selectSample(company: { code: string; name: string }) {
-    corpCode = company.code;
-    corpName = company.name;
   }
 </script>
 
@@ -41,23 +58,42 @@
     <p>워렌 버핏의 투자 원칙에 기반한 핵심 지표로 기업을 분석합니다.</p>
   </section>
 
-  <Card title="기업 분석" subtitle="OpenDART API를 활용한 재무제표 기반 분석">
+  <Card title="기업 분석" subtitle="기업명 또는 종목코드로 검색하세요">
     <form class="analysis-form" on:submit|preventDefault={handleAnalysis}>
-      <div class="form-grid">
-        <Input
-          label="기업 고유번호"
-          placeholder="8자리 (예: 00126380)"
-          bind:value={corpCode}
-          required
-        />
+      <div class="search-container">
+        <div class="search-input-wrapper">
+          <input
+            type="text"
+            class="search-input"
+            placeholder="기업명 또는 종목코드 검색 (예: 삼성전자, 005930)"
+            bind:value={searchQuery}
+            on:input={handleSearch}
+            on:focus={() => showResults = searchResults.length > 0}
+          />
+          {#if showResults}
+            <div class="search-results">
+              {#each searchResults as company}
+                <button
+                  type="button"
+                  class="search-result-item"
+                  on:click={() => selectCompany(company)}
+                >
+                  <span class="result-name">{company.corp_name}</span>
+                  <span class="result-info">{company.stock_code} | {company.sector}</span>
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
 
-        <Input
-          label="기업명"
-          placeholder="예: 삼성전자"
-          bind:value={corpName}
-          required
-        />
+        {#if corpName}
+          <div class="selected-company">
+            선택: <strong>{corpName}</strong>
+          </div>
+        {/if}
+      </div>
 
+      <div class="options-row">
         <div class="input-group">
           <label class="input-label" for="year-input">사업연도</label>
           <select id="year-input" class="select" bind:value={bsnsYear}>
@@ -68,25 +104,12 @@
         </div>
 
         <div class="input-group">
-          <label class="input-label" for="fs-input">재무제표 구분</label>
+          <label class="input-label" for="fs-input">재무제표</label>
           <select id="fs-input" class="select" bind:value={fsDiv}>
-            <option value="OFS">개별 재무제표</option>
-            <option value="CFS">연결 재무제표</option>
+            <option value="OFS">개별</option>
+            <option value="CFS">연결</option>
           </select>
         </div>
-      </div>
-
-      <div class="sample-companies">
-        <span class="sample-label">샘플 기업:</span>
-        {#each sampleCompanies as company}
-          <button
-            type="button"
-            class="sample-btn"
-            on:click={() => selectSample(company)}
-          >
-            {company.name}
-          </button>
-        {/each}
       </div>
 
       <Button type="submit" variant="primary">분석 시작</Button>
@@ -100,6 +123,11 @@
         <span class="action-icon">📊</span>
         <span class="action-title">우량주 스크리너</span>
         <span class="action-desc">5대 지표 기준 상위 종목</span>
+      </a>
+      <a href="/compare" class="action-card">
+        <span class="action-icon">⚖️</span>
+        <span class="action-title">기업 비교</span>
+        <span class="action-desc">두 기업 지표 비교 분석</span>
       </a>
     </div>
   </section>
@@ -155,9 +183,77 @@
     gap: 1.5rem;
   }
 
-  .form-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  .search-container {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .search-input-wrapper {
+    position: relative;
+  }
+
+  .search-input {
+    width: 100%;
+    padding: 1rem;
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius);
+    font-size: 1rem;
+  }
+
+  .search-input:focus {
+    outline: none;
+    border-color: var(--color-primary);
+  }
+
+  .search-results {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    background: white;
+    border: 1px solid var(--border-color);
+    border-top: none;
+    border-radius: 0 0 var(--border-radius) var(--border-radius);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    z-index: 10;
+    max-height: 300px;
+    overflow-y: auto;
+  }
+
+  .search-result-item {
+    width: 100%;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem 1rem;
+    border: none;
+    background: white;
+    cursor: pointer;
+    text-align: left;
+    transition: background 0.2s;
+  }
+
+  .search-result-item:hover {
+    background: var(--bg-tertiary);
+  }
+
+  .result-name {
+    font-weight: 500;
+  }
+
+  .result-info {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+  }
+
+  .selected-company {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+  }
+
+  .options-row {
+    display: flex;
     gap: 1rem;
   }
 
@@ -185,32 +281,6 @@
   .select:focus {
     outline: none;
     border-color: var(--color-primary);
-  }
-
-  .sample-companies {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    flex-wrap: wrap;
-  }
-
-  .sample-label {
-    font-size: 0.875rem;
-    color: var(--text-secondary);
-  }
-
-  .sample-btn {
-    padding: 0.375rem 0.75rem;
-    background: var(--bg-tertiary);
-    border: 1px solid var(--border-color);
-    border-radius: 9999px;
-    font-size: 0.875rem;
-    cursor: pointer;
-    transition: all 0.2s;
-  }
-
-  .sample-btn:hover {
-    background: var(--border-color);
   }
 
   .quick-actions {
