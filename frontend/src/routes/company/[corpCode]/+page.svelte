@@ -21,36 +21,74 @@
     recommendation: string;
   }
 
+  interface TrendData {
+    corp_code: string;
+    corp_name: string;
+    trends: any[];
+    improving: string[];
+    declining: string[];
+    trend_signal: string;
+  }
+
   let loading = true;
   let error = '';
   let analysis: AnalysisData | null = null;
+  let trend: TrendData | null = null;
 
-  $: corpCode = $page.params.corpCode;
-  $: corpName = $page.url.searchParams.get('name') || '';
-  $: bsnsYear = $page.url.searchParams.get('year') || new Date().getFullYear().toString();
-  $: fsDiv = $page.url.searchParams.get('fs_div') || 'OFS';
+  let corpCode: string;
+  let corpName: string;
+  let bsnsYear: string;
+  let fsDiv: string;
+
+  $: corpCode = $page.params.corpCode ?? '';
+  $: corpName = $page.url.searchParams.get('name') ?? '';
+  $: bsnsYear = $page.url.searchParams.get('year') ?? new Date().getFullYear().toString();
+  $: fsDiv = $page.url.searchParams.get('fs_div') ?? 'OFS';
 
   onMount(async () => {
-    await fetchAnalysis();
+    await fetchData();
   });
 
-  async function fetchAnalysis() {
+  async function fetchData() {
     loading = true;
     error = '';
 
     try {
-      const response = await api.getAnalysis(corpCode, corpName, bsnsYear, fsDiv);
+      const [analysisRes, trendRes] = await Promise.all([
+        api.getAnalysis(corpCode, corpName, bsnsYear, fsDiv),
+        api.getTrend(corpCode, corpName, bsnsYear, fsDiv)
+      ]);
 
-      if (response.success && response.data) {
-        analysis = response.data as AnalysisData;
+      if (analysisRes.success && analysisRes.data) {
+        analysis = analysisRes.data as AnalysisData;
       } else {
-        error = response.message || '분석 데이터를 가져오는데 실패했습니다.';
+        error = analysisRes.message || '분석 데이터를 가져오는데 실패했습니다.';
+      }
+
+      if (trendRes.success && trendRes.data) {
+        trend = trendRes.data as TrendData;
       }
     } catch (e) {
       error = '네트워크 오류가 발생했습니다.';
       console.error(e);
     } finally {
       loading = false;
+    }
+  }
+
+  function getTrendSignalClass(signal: string): string {
+    switch (signal) {
+      case 'improving': return 'trend-up';
+      case 'declining': return 'trend-down';
+      default: return 'trend-stable';
+    }
+  }
+
+  function getTrendSignalLabel(signal: string): string {
+    switch (signal) {
+      case 'improving': return '개선 추세';
+      case 'declining': return '하락 추세';
+      default: return '보합';
     }
   }
 </script>
@@ -87,6 +125,33 @@
           recommendation={analysis.recommendation}
         />
       </Card>
+
+      <!-- 트렌드 분석 -->
+      {#if trend && trend.trends.length > 0}
+        <Card title="3개년 트렌드">
+          <div class="trend-section">
+            <div class="trend-signal {getTrendSignalClass(trend.trend_signal)}">
+              {getTrendSignalLabel(trend.trend_signal)}
+            </div>
+
+            {#if trend.improving.length > 0}
+              <div class="trend-list trend-positive">
+                {#each trend.improving as item}
+                  <span class="trend-item">+ {item}</span>
+                {/each}
+              </div>
+            {/if}
+
+            {#if trend.declining.length > 0}
+              <div class="trend-list trend-negative">
+                {#each trend.declining as item}
+                  <span class="trend-item">- {item}</span>
+                {/each}
+              </div>
+            {/if}
+          </div>
+        </Card>
+      {/if}
 
       <!-- 5대 지표 -->
       <div class="indicators-section">
@@ -205,6 +270,54 @@
   .analysis-grid {
     display: grid;
     gap: 2rem;
+  }
+
+  .trend-section {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .trend-signal {
+    display: inline-block;
+    padding: 0.5rem 1rem;
+    border-radius: var(--border-radius);
+    font-weight: 600;
+    text-align: center;
+  }
+
+  .trend-up {
+    background: #dcfce7;
+    color: #166534;
+  }
+
+  .trend-down {
+    background: #fee2e2;
+    color: #991b1b;
+  }
+
+  .trend-stable {
+    background: #f3f4f6;
+    color: #4b5563;
+  }
+
+  .trend-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .trend-item {
+    font-size: 0.875rem;
+    padding: 0.25rem 0;
+  }
+
+  .trend-positive .trend-item {
+    color: #166534;
+  }
+
+  .trend-negative .trend-item {
+    color: #991b1b;
   }
 
   .indicators-section h2 {
