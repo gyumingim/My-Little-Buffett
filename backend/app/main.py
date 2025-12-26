@@ -41,6 +41,14 @@ async def health_check():
     return {"status": "healthy"}
 
 
+@app.get("/api/cache/stats")
+async def cache_stats():
+    """캐시 통계 조회"""
+    from shared.cache import get_cache_stats, cleanup_expired
+    cleanup_expired()
+    return get_cache_stats()
+
+
 if __name__ == "__main__":
     import uvicorn
 
