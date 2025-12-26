@@ -66,12 +66,12 @@ def extract_metrics(statements: list, term: str = "thstrm") -> FinancialMetrics:
 
         # account_id에서 ifrs- 또는 ifrs_full_ prefix 처리
         account_id_lower = account_id.lower()
-        account_nm_lower = account_nm.lower()
+        account_nm_clean = account_nm.replace(" ", "").replace("(", "").replace(")", "")
 
-        # 손익계산서 (IS)
-        if sj_div == "IS":
+        # 손익계산서 (IS) 또는 포괄손익계산서 (CIS)
+        if sj_div in ("IS", "CIS"):
             # 매출액
-            if "revenue" in account_id_lower or "매출액" in account_nm or account_nm == "수익(매출액)" or "매출" == account_nm:
+            if "revenue" in account_id_lower or "매출액" in account_nm or account_nm == "수익(매출액)" or account_nm == "매출":
                 m.revenue = max(m.revenue, amount)
             # 매출원가
             elif "costofsales" in account_id_lower or "매출원가" in account_nm:
@@ -85,18 +85,23 @@ def extract_metrics(statements: list, term: str = "thstrm") -> FinancialMetrics:
             # 금융비용/이자비용
             elif "금융비용" in account_nm or "이자비용" in account_nm or "financecost" in account_id_lower:
                 m.finance_cost = max(m.finance_cost, amount)
-            # 당기순이익 (다양한 형태)
-            elif "profitloss" in account_id_lower:
+            # 당기순이익 (더 느슨한 매칭 - 다양한 형태 커버)
+            elif "profitloss" in account_id_lower and "comprehensive" not in account_id_lower:
                 m.net_income = max(m.net_income, amount)
-            elif "당기순이익" in account_nm or "당기순손익" in account_nm:
+            elif "netincome" in account_id_lower or "netprofit" in account_id_lower:
                 m.net_income = max(m.net_income, amount)
-            elif "분기순이익" in account_nm or "반기순이익" in account_nm:
+            # 한글 매칭 (더 유연하게)
+            elif "당기순이익" in account_nm_clean or "당기순손익" in account_nm_clean:
                 m.net_income = max(m.net_income, amount)
-            elif "지배기업" in account_nm and "순이익" in account_nm:
+            elif "분기순이익" in account_nm_clean or "반기순이익" in account_nm_clean:
                 m.net_income = max(m.net_income, amount)
-            elif "지배기업" in account_nm and "손익" in account_nm:
+            elif "연결당기순이익" in account_nm_clean or "연결순이익" in account_nm_clean:
                 m.net_income = max(m.net_income, amount)
-            elif account_nm in ["순이익", "순손익", "당기이익", "당기손익"]:
+            # "순이익" 또는 "순손익"이 포함되고 "포괄"이 아닌 경우
+            elif ("순이익" in account_nm or "순손익" in account_nm) and "포괄" not in account_nm:
+                m.net_income = max(m.net_income, amount)
+            # 지배기업 귀속 순이익
+            elif "지배기업" in account_nm and ("이익" in account_nm or "손익" in account_nm) and "포괄" not in account_nm:
                 m.net_income = max(m.net_income, amount)
 
         # 재무상태표 (BS)
@@ -110,6 +115,8 @@ def extract_metrics(statements: list, term: str = "thstrm") -> FinancialMetrics:
                 m.total_assets = max(m.total_assets, amount)
             elif account_nm == "자산총계" or account_nm == "자산" or account_nm == "자산 계":
                 m.total_assets = max(m.total_assets, amount)
+            elif "자산총계" in account_nm_clean:
+                m.total_assets = max(m.total_assets, amount)
             # 유동자산
             elif "currentassets" in account_id_lower or "유동자산" in account_nm:
                 m.current_assets = max(m.current_assets, amount)
@@ -118,6 +125,8 @@ def extract_metrics(statements: list, term: str = "thstrm") -> FinancialMetrics:
                 m.total_liabilities = max(m.total_liabilities, amount)
             elif account_nm == "부채총계" or account_nm == "부채" or account_nm == "부채 계":
                 m.total_liabilities = max(m.total_liabilities, amount)
+            elif account_nm_clean == "부채총계":
+                m.total_liabilities = max(m.total_liabilities, amount)
             # 유동부채
             elif "currentliabilities" in account_id_lower or "유동부채" in account_nm:
                 m.current_liabilities = max(m.current_liabilities, amount)
@@ -125,6 +134,8 @@ def extract_metrics(statements: list, term: str = "thstrm") -> FinancialMetrics:
             elif "equity" in account_id_lower and "retained" not in account_id_lower and "minority" not in account_id_lower:
                 m.total_equity = max(m.total_equity, amount)
             elif account_nm == "자본총계" or account_nm == "자본 총계":
+                m.total_equity = max(m.total_equity, amount)
+            elif account_nm_clean == "자본총계":
                 m.total_equity = max(m.total_equity, amount)
             elif account_nm in ["자본", "자본계", "자본 계"]:
                 m.total_equity = max(m.total_equity, amount)
@@ -146,6 +157,40 @@ def extract_metrics(statements: list, term: str = "thstrm") -> FinancialMetrics:
                 m.financing_cash_flow = amount
 
     return m
+
+
+def extract_metrics_with_fallback(statements: list) -> FinancialMetrics:
+    """3개년 데이터에서 가장 최근 유효한 값으로 메트릭 추출"""
+    # 당기 → 전기 → 전전기 순으로 시도
+    current = extract_metrics(statements, "thstrm")
+    previous = extract_metrics(statements, "frmtrm")
+    before_prev = extract_metrics(statements, "bfefrmtrm")
+
+    # 순이익이 0이면 이전 연도에서 가져오기
+    if current.net_income == 0 and previous.net_income != 0:
+        current.net_income = previous.net_income
+    elif current.net_income == 0 and before_prev.net_income != 0:
+        current.net_income = before_prev.net_income
+
+    # 자본총계가 0이면 이전 연도에서 가져오기
+    if current.total_equity == 0 and previous.total_equity != 0:
+        current.total_equity = previous.total_equity
+    elif current.total_equity == 0 and before_prev.total_equity != 0:
+        current.total_equity = before_prev.total_equity
+
+    # 자산총계가 0이면 이전 연도에서 가져오기
+    if current.total_assets == 0 and previous.total_assets != 0:
+        current.total_assets = previous.total_assets
+
+    # 부채총계가 0이면 이전 연도에서 가져오기
+    if current.total_liabilities == 0 and previous.total_liabilities != 0:
+        current.total_liabilities = previous.total_liabilities
+
+    # 영업이익이 0이면 이전 연도에서 가져오기
+    if current.operating_income == 0 and previous.operating_income != 0:
+        current.operating_income = previous.operating_income
+
+    return current
 
 
 @dataclass
@@ -187,21 +232,28 @@ class BuffettAnalyzer:
     """버핏형 가치투자 분석기"""
 
     async def analyze(self, corp_code: str, corp_name: str, year: str, fs_div: str = "CFS") -> AnalysisResult | None:
-        """종합 분석 수행"""
-        # 재무제표 조회
-        data = await dart_client.get_financial_statements(
-            corp_code=corp_code, bsns_year=year, reprt_code="11011", fs_div=fs_div
-        )
+        """종합 분석 수행 (데이터 없으면 최대 3년 전까지 fallback)"""
 
-        if data.get("status") != "000":
-            return None
+        # 연도 fallback 시도 (요청 연도 → 1년 전 → 2년 전 → 3년 전)
+        statements = None
+        actual_year = year
 
-        statements = data.get("list", [])
+        for year_offset in range(4):  # 0, 1, 2, 3년 전
+            try_year = str(int(year) - year_offset)
+            data = await dart_client.get_financial_statements(
+                corp_code=corp_code, bsns_year=try_year, reprt_code="11011", fs_div=fs_div
+            )
+
+            if data.get("status") == "000" and data.get("list"):
+                statements = data.get("list", [])
+                actual_year = try_year
+                break
+
         if not statements:
             return None
 
-        # 3개년 지표 추출
-        current = extract_metrics(statements, "thstrm")
+        # 3개년 지표 추출 (당기 데이터 없으면 전기/전전기에서 fallback)
+        current = extract_metrics_with_fallback(statements)
         previous = extract_metrics(statements, "frmtrm")
         before_prev = extract_metrics(statements, "bfefrmtrm")
 
@@ -244,10 +296,14 @@ class BuffettAnalyzer:
         # 신호 결정
         signal, recommendation = self._get_signal(total_score, filter_result)
 
+        # fallback 발생 시 recommendation에 표시
+        if actual_year != year:
+            recommendation = f"[{actual_year}년 데이터 사용] " + recommendation
+
         return AnalysisResult(
             corp_code=corp_code,
             corp_name=corp_name,
-            year=year,
+            year=actual_year,  # 실제 데이터가 있는 연도
             fs_div=fs_div,
             indicators=indicators,
             total_score=round(total_score, 1),
