@@ -22,8 +22,10 @@
     total_analyzed: number;
     passed_count: number;
     filtered_count: number;
+    no_data_count: number;
     stocks: Stock[];
     filtered_out: Stock[];
+    no_data_corps: string[];
   }
 
   let loading = true;
@@ -32,12 +34,12 @@
   let showFilteredOut = false;
 
   // 필터 옵션
-  let year = '2023';
+  let year = '2024';
   let fsDiv = 'CFS';
   let limit = 100;
 
-  const yearOptions = ['2023', '2022', '2021', '2020'];
-  const limitOptions = [50, 100, 150, 200];
+  const yearOptions = ['2024', '2023', '2022', '2021'];
+  const limitOptions = [50, 100, 150, 200, 250];
 
   onMount(async () => {
     await fetchData();
@@ -170,6 +172,10 @@
       <div class="summary-card filtered">
         <span class="summary-value">{data.filtered_count}</span>
         <span class="summary-label">필터링 탈락</span>
+      </div>
+      <div class="summary-card no-data">
+        <span class="summary-value">{data.no_data_count || 0}</span>
+        <span class="summary-label">데이터 없음</span>
       </div>
     </div>
 
@@ -330,7 +336,7 @@
   /* 요약 카드 */
   .summary-cards {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(4, 1fr);
     gap: 1rem;
     margin: 1.5rem 0;
   }
@@ -351,6 +357,10 @@
 
   .summary-card.filtered {
     background: #fee2e2;
+  }
+
+  .summary-card.no-data {
+    background: #fef3c7;
   }
 
   .summary-value {
@@ -604,7 +614,7 @@
     }
 
     .summary-cards {
-      grid-template-columns: 1fr;
+      grid-template-columns: repeat(2, 1fr);
     }
 
     .indicator-col {
