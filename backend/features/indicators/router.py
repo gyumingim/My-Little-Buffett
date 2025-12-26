@@ -442,7 +442,7 @@ async def debug_analysis(
     디버깅용: DART API 원본 응답과 파싱 결과 확인
     """
     from shared.api.dart_client import dart_client
-    from .analyzer import extract_metrics
+    from .analyzer import extract_metrics, extract_metrics_with_fallback
 
     # DART API 호출
     data = await dart_client.get_financial_statements(
@@ -480,12 +480,21 @@ async def debug_analysis(
         elif sj_div == "CF" and any(kw in account_nm for kw in ["영업활동", "투자활동", "재무활동"]):
             key_items.append({"type": "CF", "name": account_nm, "amount": thstrm})
 
-    # 파싱 결과
-    metrics = extract_metrics(statements, "thstrm")
+    # 파싱 결과 (fallback 적용)
+    metrics = extract_metrics_with_fallback(statements)
+    metrics_raw = extract_metrics(statements, "thstrm")  # fallback 없는 원본
 
     # ROE 계산
     roe = (metrics.net_income / metrics.total_equity * 100) if metrics.total_equity > 0 else 0
     debt_ratio = (metrics.total_liabilities / metrics.total_equity * 100) if metrics.total_equity > 0 else 0
+
+    # fallback 적용 여부 확인
+    fallback_applied = {
+        "net_income": metrics.net_income != metrics_raw.net_income,
+        "total_equity": metrics.total_equity != metrics_raw.total_equity,
+        "total_assets": metrics.total_assets != metrics_raw.total_assets,
+        "total_liabilities": metrics.total_liabilities != metrics_raw.total_liabilities,
+    }
 
     return BaseResponse(
         success=True,
@@ -504,6 +513,11 @@ async def debug_analysis(
                 "total_equity": metrics.total_equity,
                 "operating_cash_flow": metrics.operating_cash_flow,
             },
+            "raw_metrics": {
+                "net_income": metrics_raw.net_income,
+                "total_equity": metrics_raw.total_equity,
+            },
+            "fallback_applied": fallback_applied,
             "calculated_ratios": {
                 "roe_percent": round(roe, 2),
                 "debt_ratio_percent": round(debt_ratio, 2),
