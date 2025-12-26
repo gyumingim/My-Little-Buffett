@@ -1,23 +1,17 @@
-"""OpenDART API 클라이언트 (SQLite 캐시 지원)"""
+"""OpenDART API 클라이언트 (DB 영구 저장)
+
+흐름: 프론트 → 백엔드 → DB 확인 → 없으면 API 호출 → DB 저장 → 반환
+한번 호출된 데이터는 영구 저장되어 재호출하지 않음.
+"""
 
 import httpx
 from typing import Any
 from app.config import get_settings
-from shared.cache import get_cached, set_cached
-
-# 엔드포인트별 캐시 TTL (시간)
-CACHE_TTL = {
-    "fnlttSinglAcntAll.json": 168,  # 재무제표: 7일
-    "elestock.json": 24,             # 임원 주식: 1일
-    "piicDecsn.json": 24,            # 유상증자: 1일
-    "cvbdIsDecsn.json": 24,          # 전환사채: 1일
-    "tsstkAqDecsn.json": 24,         # 자기주식: 1일
-    "hyslrSttus.json": 168,          # 최대주주: 7일
-}
+from shared.cache import get_stored, store_data
 
 
 class DartClient:
-    """OpenDART API 클라이언트 (캐시 지원)"""
+    """OpenDART API 클라이언트 (DB 우선 조회)"""
 
     def __init__(self):
         self.settings = get_settings()
@@ -25,20 +19,18 @@ class DartClient:
         self.api_key = self.settings.dart_api_key
 
     def _get_params(self, **kwargs) -> dict:
-        """API 파라미터에 API 키 추가"""
         params = {"crtfc_key": self.api_key}
         params.update(kwargs)
         return params
 
-    async def _request(self, endpoint: str, use_cache: bool = True, **params) -> dict[str, Any]:
-        """API 요청 수행 (캐시 우선)"""
-        # 캐시 확인
-        if use_cache:
-            cached = get_cached(endpoint, params)
-            if cached:
-                return cached
+    async def _request(self, endpoint: str, **params) -> dict[str, Any]:
+        """DB 우선 조회, 없으면 API 호출 후 저장"""
+        # 1. DB에서 조회
+        stored = get_stored(endpoint, params)
+        if stored:
+            return stored
 
-        # API 호출
+        # 2. API 호출
         url = f"{self.base_url}/{endpoint}"
         request_params = self._get_params(**params)
 
@@ -47,10 +39,9 @@ class DartClient:
             response.raise_for_status()
             data = response.json()
 
-        # 캐시 저장
-        if use_cache and data.get("status") == "000":
-            ttl = CACHE_TTL.get(endpoint, 24)
-            set_cached(endpoint, params, data, ttl_hours=ttl)
+        # 3. 성공시 DB에 영구 저장
+        if data.get("status") == "000":
+            store_data(endpoint, params, data)
 
         return data
 
