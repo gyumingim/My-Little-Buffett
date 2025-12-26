@@ -122,6 +122,28 @@ npm run dev
 - Backend API: http://localhost:8000
 - API 문서: http://localhost:8000/docs
 
+## 데이터베이스 관리
+
+분석 결과는 SQLite DB에 캐시됩니다. 파싱 로직 업데이트 후 재분석이 필요하면 DB를 초기화하세요.
+
+### DB 초기화 (캐시 삭제)
+
+```bash
+# 분석 결과 캐시만 삭제
+rm backend/data/cache.db
+
+# API 응답 캐시도 함께 삭제 (전체 초기화)
+rm backend/data/cache.db backend/data/api_data.db
+
+# 또는 data 폴더 전체 삭제
+rm -rf backend/data/*.db
+```
+
+### 스크리너에서 새로고침
+DB 삭제 없이 특정 연도만 재분석하려면:
+1. 스크리너 페이지에서 **새로고침(Refresh)** 버튼 클릭
+2. 또는 API 호출: `POST /api/indicators/v2/screener/refresh?year=2024&limit=4000`
+
 ## API 엔드포인트
 
 ### 지표 분석
