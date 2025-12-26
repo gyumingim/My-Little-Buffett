@@ -451,6 +451,63 @@ async def get_top_picks(
 # 디버그 API
 # ========================
 
+@router.get("/v2/debug/cache-status/{corp_code}")
+async def debug_cache_status(
+    corp_code: str,
+    bsns_year: str = Query(..., description="사업연도"),
+):
+    """
+    디버깅용: 특정 기업의 API 캐시 상태 확인
+    CFS/OFS 모두 확인하여 어떤 데이터가 캐시되어 있는지 표시
+    """
+    from shared.cache import get_stored
+
+    results = {}
+
+    # 4년치 × 2종류(CFS, OFS) 확인
+    for fs_div in ["CFS", "OFS"]:
+        for year_offset in range(4):
+            check_year = str(int(bsns_year) - year_offset)
+            params = {
+                "corp_code": corp_code,
+                "bsns_year": check_year,
+                "reprt_code": "11011",
+                "fs_div": fs_div,
+            }
+
+            cached = get_stored("fnlttSinglAcntAll.json", params)
+
+            key = f"{fs_div}/{check_year}"
+            if cached:
+                status = cached.get("status", "unknown")
+                msg = cached.get("message", "")
+                has_data = "list" in cached and len(cached.get("list", [])) > 0
+                item_count = len(cached.get("list", [])) if has_data else 0
+                results[key] = {
+                    "cached": True,
+                    "status": status,
+                    "message": msg[:50] if msg else None,
+                    "has_data": has_data,
+                    "item_count": item_count,
+                }
+            else:
+                results[key] = {"cached": False}
+
+    # 사용 가능한 데이터 요약
+    available = [k for k, v in results.items() if v.get("has_data")]
+
+    return BaseResponse(
+        success=True,
+        message=f"캐시 상태: {len(available)}개 조합에 데이터 있음",
+        data={
+            "corp_code": corp_code,
+            "base_year": bsns_year,
+            "cache_status": results,
+            "available_combinations": available,
+        }
+    )
+
+
 @router.get("/v2/debug/{corp_code}")
 async def debug_analysis(
     corp_code: str,
