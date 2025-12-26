@@ -39,7 +39,31 @@ async function request<T>(endpoint: string, options?: RequestInit): Promise<ApiR
 
 export const api = {
   /**
-   * 5대 지표 종합 분석 조회
+   * 종합 분석 v2 (10개 지표 기반)
+   */
+  async getAnalysisV2(corpCode: string, corpName: string, bsnsYear: string, fsDiv: string = 'CFS') {
+    const params = new URLSearchParams({
+      corp_name: corpName,
+      bsns_year: bsnsYear,
+      fs_div: fsDiv
+    });
+    return request(`/indicators/v2/analysis/${corpCode}?${params}`);
+  },
+
+  /**
+   * 우량주 스크리너 v2 (10개 지표 기반)
+   */
+  async screenerV2(year: string, fsDiv: string = 'CFS', limit: number = 30) {
+    const params = new URLSearchParams({
+      year,
+      fs_div: fsDiv,
+      limit: limit.toString()
+    });
+    return request(`/indicators/v2/screener?${params}`);
+  },
+
+  /**
+   * 5대 지표 종합 분석 조회 (기존)
    */
   async getAnalysis(corpCode: string, corpName: string, bsnsYear: string, fsDiv: string = 'OFS') {
     const params = new URLSearchParams({

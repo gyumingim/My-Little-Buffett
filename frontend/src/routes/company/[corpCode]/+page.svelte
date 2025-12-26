@@ -1,39 +1,36 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { page } from '$app/stores';
+  import { goto } from '$app/navigation';
   import { api } from '$shared/api';
   import { Loading, Card, Button } from '$shared/ui';
-  import { IndicatorCard, ScoreGauge } from '$widgets/indicator-card';
-  import { formatAmount, formatPercent, formatRatio, addToWatchlist, removeFromWatchlist, isInWatchlist } from '$shared/utils';
+  import { addToWatchlist, removeFromWatchlist, isInWatchlist } from '$shared/utils';
+
+  interface Indicator {
+    name: string;
+    value: number;
+    score: number;
+    grade: string;
+    description: string;
+    good_criteria: string;
+    trend?: string;
+  }
 
   interface AnalysisData {
     corp_code: string;
     corp_name: string;
-    analysis_date: string;
-    bsns_year: string;
-    cash_generation: any;
-    interest_coverage: any;
-    operating_profit_growth: any;
-    dilution_risk: any;
-    insider_trading: any;
-    overall_score: number;
-    overall_signal: string;
+    year: string;
+    fs_div: string;
+    total_score: number;
+    signal: string;
     recommendation: string;
-  }
-
-  interface TrendData {
-    corp_code: string;
-    corp_name: string;
-    trends: any[];
-    improving: string[];
-    declining: string[];
-    trend_signal: string;
+    indicators: Indicator[];
+    analysis_date: string;
   }
 
   let loading = true;
   let error = '';
   let analysis: AnalysisData | null = null;
-  let trend: TrendData | null = null;
   let inWatchlist = false;
 
   let corpCode: string;
@@ -43,8 +40,8 @@
 
   $: corpCode = $page.params.corpCode ?? '';
   $: corpName = $page.url.searchParams.get('name') ?? '';
-  $: bsnsYear = $page.url.searchParams.get('year') ?? new Date().getFullYear().toString();
-  $: fsDiv = $page.url.searchParams.get('fs_div') ?? 'OFS';
+  $: bsnsYear = $page.url.searchParams.get('year') ?? '2023';
+  $: fsDiv = $page.url.searchParams.get('fs_div') ?? 'CFS';
 
   onMount(async () => {
     inWatchlist = isInWatchlist(corpCode);
@@ -65,19 +62,12 @@
     error = '';
 
     try {
-      const [analysisRes, trendRes] = await Promise.all([
-        api.getAnalysis(corpCode, corpName, bsnsYear, fsDiv),
-        api.getTrend(corpCode, corpName, bsnsYear, fsDiv)
-      ]);
+      const response = await api.getAnalysisV2(corpCode, corpName, bsnsYear, fsDiv);
 
-      if (analysisRes.success && analysisRes.data) {
-        analysis = analysisRes.data as AnalysisData;
+      if (response.success && response.data) {
+        analysis = response.data as AnalysisData;
       } else {
-        error = analysisRes.message || '분석 데이터를 가져오는데 실패했습니다.';
-      }
-
-      if (trendRes.success && trendRes.data) {
-        trend = trendRes.data as TrendData;
+        error = response.message || '분석 데이터를 가져오는데 실패했습니다.';
       }
     } catch (e) {
       error = '네트워크 오류가 발생했습니다.';
@@ -87,30 +77,87 @@
     }
   }
 
-  function getTrendSignalClass(signal: string): string {
+  function getSignalColor(signal: string): string {
     switch (signal) {
-      case 'improving': return 'trend-up';
-      case 'declining': return 'trend-down';
+      case '강력매수': return 'signal-strong-buy';
+      case '매수': return 'signal-buy';
+      case '관망': return 'signal-hold';
+      case '매도': return 'signal-sell';
+      case '강력매도': return 'signal-strong-sell';
+      default: return 'signal-neutral';
+    }
+  }
+
+  function getGradeColor(grade: string): string {
+    switch (grade) {
+      case 'A': return 'grade-a';
+      case 'B': return 'grade-b';
+      case 'C': return 'grade-c';
+      case 'D': return 'grade-d';
+      case 'F': return 'grade-f';
+      default: return '';
+    }
+  }
+
+  function getScoreColor(score: number): string {
+    if (score >= 80) return 'score-excellent';
+    if (score >= 65) return 'score-good';
+    if (score >= 50) return 'score-average';
+    if (score >= 35) return 'score-poor';
+    return 'score-bad';
+  }
+
+  function formatValue(indicator: Indicator): string {
+    const name = indicator.name;
+    const val = indicator.value;
+
+    if (name.includes('배율')) {
+      return val.toFixed(2) + '배';
+    } else if (name.includes('률') || name.includes('율')) {
+      return val.toFixed(2) + '%';
+    } else if (name.includes('비율')) {
+      return val.toFixed(2) + '%';
+    }
+    return val.toFixed(2);
+  }
+
+  function getTrendIcon(trend?: string): string {
+    if (!trend) return '';
+    switch (trend) {
+      case 'up': return '↑';
+      case 'down': return '↓';
+      default: return '→';
+    }
+  }
+
+  function getTrendClass(trend?: string): string {
+    if (!trend) return '';
+    switch (trend) {
+      case 'up': return 'trend-up';
+      case 'down': return 'trend-down';
       default: return 'trend-stable';
     }
   }
 
-  function getTrendSignalLabel(signal: string): string {
-    switch (signal) {
-      case 'improving': return '개선 추세';
-      case 'declining': return '하락 추세';
-      default: return '보합';
-    }
+  function getCategoryIcon(name: string): string {
+    if (name.includes('ROE') || name.includes('마진') || name.includes('이익')) return '💰';
+    if (name.includes('부채') || name.includes('이자') || name.includes('유동')) return '🏦';
+    if (name.includes('성장')) return '📈';
+    if (name.includes('현금')) return '💵';
+    return '📊';
   }
 </script>
 
 <svelte:head>
-  <title>{corpName} 분석 결과 - My Little Buffett</title>
+  <title>{corpName || '기업'} 분석 결과 - My Little Buffett</title>
 </svelte:head>
 
 <div class="container">
   {#if loading}
-    <Loading size="lg" text="분석 중입니다..." />
+    <div class="loading-section">
+      <Loading size="lg" text="분석 중입니다..." />
+      <p class="loading-hint">재무제표 데이터를 분석하고 있습니다</p>
+    </div>
   {:else if error}
     <Card>
       <div class="error-state">
@@ -127,126 +174,86 @@
             {inWatchlist ? '★' : '☆'}
           </button>
         </div>
-        <p>고유번호: {analysis.corp_code} | {analysis.bsns_year}년 사업보고서 기준</p>
+        <p class="meta">
+          {analysis.year}년 {analysis.fs_div === 'CFS' ? '연결' : '개별'} 재무제표 기준
+        </p>
       </div>
       <p class="analysis-date">분석일: {analysis.analysis_date}</p>
     </div>
 
-    <div class="analysis-grid">
-      <!-- 종합 점수 -->
-      <Card title="종합 분석">
-        <ScoreGauge
-          score={analysis.overall_score}
-          signal={analysis.overall_signal}
-          recommendation={analysis.recommendation}
-        />
-      </Card>
+    <!-- 종합 점수 카드 -->
+    <Card>
+      <div class="score-card">
+        <div class="score-main">
+          <div class="total-score {getScoreColor(analysis.total_score)}">
+            {analysis.total_score}
+          </div>
+          <div class="score-label">종합 점수</div>
+        </div>
+        <div class="signal-section">
+          <span class="signal-badge {getSignalColor(analysis.signal)}">
+            {analysis.signal}
+          </span>
+          <p class="recommendation">{analysis.recommendation}</p>
+        </div>
+      </div>
+    </Card>
 
-      <!-- 트렌드 분석 -->
-      {#if trend && trend.trends.length > 0}
-        <Card title="3개년 트렌드">
-          <div class="trend-section">
-            <div class="trend-signal {getTrendSignalClass(trend.trend_signal)}">
-              {getTrendSignalLabel(trend.trend_signal)}
+    <!-- 등급 범례 -->
+    <div class="legend">
+      <h4>지표 등급 안내</h4>
+      <div class="legend-items">
+        <span class="legend-item"><span class="grade-badge grade-a">A</span> 우수 (80+)</span>
+        <span class="legend-item"><span class="grade-badge grade-b">B</span> 양호 (65-79)</span>
+        <span class="legend-item"><span class="grade-badge grade-c">C</span> 보통 (50-64)</span>
+        <span class="legend-item"><span class="grade-badge grade-d">D</span> 미흡 (35-49)</span>
+        <span class="legend-item"><span class="grade-badge grade-f">F</span> 위험 (0-34)</span>
+      </div>
+    </div>
+
+    <!-- 지표 섹션 -->
+    <div class="indicators-section">
+      <h2>10대 재무 지표 상세 분석</h2>
+
+      <div class="indicators-grid">
+        {#each analysis.indicators as indicator}
+          <div class="indicator-card">
+            <div class="indicator-header">
+              <span class="indicator-icon">{getCategoryIcon(indicator.name)}</span>
+              <h3 class="indicator-name">{indicator.name}</h3>
+              <div class="indicator-grade">
+                <span class="grade-badge {getGradeColor(indicator.grade)}">{indicator.grade}</span>
+                <span class="score-small {getScoreColor(indicator.score)}">{indicator.score}점</span>
+              </div>
             </div>
 
-            {#if trend.improving.length > 0}
-              <div class="trend-list trend-positive">
-                {#each trend.improving as item}
-                  <span class="trend-item">+ {item}</span>
-                {/each}
-              </div>
-            {/if}
+            <div class="indicator-value-row">
+              <span class="value-label">측정값</span>
+              <span class="value-number {getTrendClass(indicator.trend)}">
+                {formatValue(indicator)}
+                {#if indicator.trend}
+                  <span class="trend-icon">{getTrendIcon(indicator.trend)}</span>
+                {/if}
+              </span>
+            </div>
 
-            {#if trend.declining.length > 0}
-              <div class="trend-list trend-negative">
-                {#each trend.declining as item}
-                  <span class="trend-item">- {item}</span>
-                {/each}
-              </div>
-            {/if}
+            <div class="indicator-description">
+              <p class="what-is">{indicator.description}</p>
+            </div>
+
+            <div class="indicator-criteria">
+              <span class="criteria-label">좋은 기준</span>
+              <span class="criteria-value">{indicator.good_criteria}</span>
+            </div>
           </div>
-        </Card>
-      {/if}
-
-      <!-- 5대 지표 -->
-      <div class="indicators-section">
-        <h2>5대 투자 지표</h2>
-
-        <div class="indicators-grid">
-          {#if analysis.cash_generation}
-            <IndicatorCard
-              name={analysis.cash_generation.name}
-              description={analysis.cash_generation.description}
-              signal={analysis.cash_generation.signal}
-              signalDescription={analysis.cash_generation.signal_description}
-              metrics={[
-                { label: '영업활동현금흐름', value: formatAmount(analysis.cash_generation.operating_cash_flow) },
-                { label: '당기순이익', value: formatAmount(analysis.cash_generation.net_income) },
-              ]}
-            />
-          {/if}
-
-          {#if analysis.interest_coverage}
-            <IndicatorCard
-              name={analysis.interest_coverage.name}
-              description={analysis.interest_coverage.description}
-              signal={analysis.interest_coverage.signal}
-              signalDescription={analysis.interest_coverage.signal_description}
-              metrics={[
-                { label: '영업이익', value: formatAmount(analysis.interest_coverage.operating_income) },
-                { label: '이자비용', value: formatAmount(analysis.interest_coverage.interest_expense) },
-                { label: '이자보상배율', value: formatRatio(analysis.interest_coverage.ratio) },
-              ]}
-            />
-          {/if}
-
-          {#if analysis.operating_profit_growth}
-            <IndicatorCard
-              name={analysis.operating_profit_growth.name}
-              description={analysis.operating_profit_growth.description}
-              signal={analysis.operating_profit_growth.signal}
-              signalDescription={analysis.operating_profit_growth.signal_description}
-              metrics={[
-                { label: '당기 영업이익', value: formatAmount(analysis.operating_profit_growth.current_operating_income) },
-                { label: '전기 영업이익', value: formatAmount(analysis.operating_profit_growth.previous_operating_income) },
-                { label: '성장률', value: formatPercent(analysis.operating_profit_growth.growth_rate) },
-              ]}
-            />
-          {/if}
-
-          {#if analysis.dilution_risk}
-            <IndicatorCard
-              name={analysis.dilution_risk.name}
-              description={analysis.dilution_risk.description}
-              signal={analysis.dilution_risk.signal}
-              signalDescription={analysis.dilution_risk.signal_description}
-              metrics={[
-                { label: '전환 가능 주식수', value: analysis.dilution_risk.convertible_shares.toLocaleString() + '주' },
-                { label: '총 발행 주식수', value: analysis.dilution_risk.total_shares.toLocaleString() + '주' },
-                { label: '희석 비율', value: analysis.dilution_risk.dilution_ratio.toFixed(2) + '%' },
-              ]}
-            />
-          {/if}
-
-          {#if analysis.insider_trading}
-            <IndicatorCard
-              name={analysis.insider_trading.name}
-              description={analysis.insider_trading.description}
-              signal={analysis.insider_trading.signal}
-              signalDescription={analysis.insider_trading.signal_description}
-              metrics={[
-                { label: '순매수 건수', value: analysis.insider_trading.net_buy_count + '건' },
-                { label: '순매도 건수', value: analysis.insider_trading.net_sell_count + '건' },
-                { label: 'CEO 매수', value: analysis.insider_trading.ceo_bought ? '있음' : '없음' },
-              ]}
-            />
-          {/if}
-        </div>
+        {/each}
       </div>
     </div>
 
     <div class="actions">
+      <Button variant="secondary" on:click={() => goto('/screener')}>
+        스크리너로
+      </Button>
       <Button variant="secondary" on:click={() => history.back()}>
         다른 기업 분석
       </Button>
@@ -258,6 +265,17 @@
 </div>
 
 <style>
+  .loading-section {
+    text-align: center;
+    padding: 3rem 0;
+  }
+
+  .loading-hint {
+    margin-top: 1rem;
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+  }
+
   .analysis-header {
     display: flex;
     justify-content: space-between;
@@ -296,7 +314,7 @@
     color: #fbbf24;
   }
 
-  .company-info p {
+  .meta {
     color: var(--text-secondary);
     margin: 0.5rem 0 0;
   }
@@ -306,57 +324,94 @@
     font-size: 0.875rem;
   }
 
-  .analysis-grid {
-    display: grid;
-    gap: 2rem;
-  }
-
-  .trend-section {
+  /* 종합 점수 카드 */
+  .score-card {
     display: flex;
-    flex-direction: column;
-    gap: 1rem;
+    align-items: center;
+    gap: 2rem;
+    padding: 1rem;
   }
 
-  .trend-signal {
-    display: inline-block;
-    padding: 0.5rem 1rem;
-    border-radius: var(--border-radius);
-    font-weight: 600;
+  .score-main {
     text-align: center;
   }
 
-  .trend-up {
-    background: #dcfce7;
-    color: #166534;
+  .total-score {
+    font-size: 3rem;
+    font-weight: 800;
+    padding: 1rem 1.5rem;
+    border-radius: var(--border-radius-lg);
   }
 
-  .trend-down {
-    background: #fee2e2;
-    color: #991b1b;
-  }
-
-  .trend-stable {
-    background: #f3f4f6;
-    color: #4b5563;
-  }
-
-  .trend-list {
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-  }
-
-  .trend-item {
+  .score-label {
     font-size: 0.875rem;
-    padding: 0.25rem 0;
+    color: var(--text-secondary);
+    margin-top: 0.5rem;
   }
 
-  .trend-positive .trend-item {
-    color: #166534;
+  .signal-section {
+    flex: 1;
   }
 
-  .trend-negative .trend-item {
-    color: #991b1b;
+  .signal-badge {
+    display: inline-block;
+    padding: 0.5rem 1.25rem;
+    border-radius: 9999px;
+    font-weight: 700;
+    font-size: 1.125rem;
+  }
+
+  .recommendation {
+    margin-top: 0.75rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+  }
+
+  /* 시그널 색상 */
+  .signal-strong-buy { background: #dcfce7; color: #166534; }
+  .signal-buy { background: #d1fae5; color: #047857; }
+  .signal-hold { background: #fef3c7; color: #92400e; }
+  .signal-sell { background: #fee2e2; color: #991b1b; }
+  .signal-strong-sell { background: #fecaca; color: #7f1d1d; }
+  .signal-neutral { background: #f3f4f6; color: #4b5563; }
+
+  /* 점수 색상 */
+  .score-excellent { color: #166534; background: #dcfce7; }
+  .score-good { color: #047857; background: #d1fae5; }
+  .score-average { color: #92400e; background: #fef3c7; }
+  .score-poor { color: #9a3412; background: #ffedd5; }
+  .score-bad { color: #991b1b; background: #fee2e2; }
+
+  /* 범례 */
+  .legend {
+    background: var(--bg-secondary);
+    padding: 1rem 1.25rem;
+    border-radius: var(--border-radius);
+    margin: 1.5rem 0;
+  }
+
+  .legend h4 {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    margin-bottom: 0.75rem;
+  }
+
+  .legend-items {
+    display: flex;
+    gap: 1.25rem;
+    flex-wrap: wrap;
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    font-size: 0.8125rem;
+  }
+
+  /* 지표 섹션 */
+  .indicators-section {
+    margin-top: 2rem;
   }
 
   .indicators-section h2 {
@@ -367,10 +422,134 @@
 
   .indicators-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-    gap: 1.5rem;
+    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+    gap: 1rem;
   }
 
+  .indicator-card {
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-lg);
+    padding: 1.25rem;
+    transition: all 0.2s;
+  }
+
+  .indicator-card:hover {
+    border-color: var(--color-primary);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+  }
+
+  .indicator-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+  }
+
+  .indicator-icon {
+    font-size: 1.25rem;
+  }
+
+  .indicator-name {
+    flex: 1;
+    font-size: 1rem;
+    font-weight: 600;
+    margin: 0;
+  }
+
+  .indicator-grade {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .grade-badge {
+    width: 1.75rem;
+    height: 1.75rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 0.375rem;
+    font-size: 0.875rem;
+    font-weight: 700;
+  }
+
+  .grade-a { background: #dcfce7; color: #166534; }
+  .grade-b { background: #d1fae5; color: #047857; }
+  .grade-c { background: #fef3c7; color: #92400e; }
+  .grade-d { background: #ffedd5; color: #9a3412; }
+  .grade-f { background: #fee2e2; color: #991b1b; }
+
+  .score-small {
+    font-size: 0.8125rem;
+    font-weight: 600;
+    padding: 0.125rem 0.5rem;
+    border-radius: var(--border-radius);
+  }
+
+  .indicator-value-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem;
+    background: var(--bg-secondary);
+    border-radius: var(--border-radius);
+    margin-bottom: 0.75rem;
+  }
+
+  .value-label {
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+  }
+
+  .value-number {
+    font-size: 1.125rem;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+  }
+
+  .trend-icon {
+    font-size: 0.875rem;
+  }
+
+  .trend-up { color: #166534; }
+  .trend-down { color: #991b1b; }
+  .trend-stable { color: #6b7280; }
+
+  .indicator-description {
+    margin-bottom: 0.75rem;
+  }
+
+  .what-is {
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+    margin: 0;
+  }
+
+  .indicator-criteria {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding-top: 0.75rem;
+    border-top: 1px dashed var(--border-color);
+  }
+
+  .criteria-label {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+  }
+
+  .criteria-value {
+    font-size: 0.8125rem;
+    color: #166534;
+    font-weight: 500;
+  }
+
+  /* 에러 상태 */
   .error-state {
     text-align: center;
     padding: 2rem;
@@ -381,6 +560,7 @@
     margin-bottom: 1rem;
   }
 
+  /* 액션 버튼 */
   .actions {
     display: flex;
     justify-content: center;
@@ -398,14 +578,31 @@
       font-size: 1.5rem;
     }
 
+    .score-card {
+      flex-direction: column;
+      text-align: center;
+    }
+
     .indicators-grid {
       grid-template-columns: 1fr;
+    }
+
+    .total-score {
+      font-size: 2.5rem;
+    }
+
+    .actions {
+      flex-direction: column;
     }
   }
 
   @media print {
     .actions {
       display: none;
+    }
+
+    .indicator-card {
+      break-inside: avoid;
     }
   }
 </style>

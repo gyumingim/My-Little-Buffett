@@ -3,10 +3,119 @@
 from fastapi import APIRouter, HTTPException, Query
 from .service import indicator_service
 from .trend_service import trend_service, stock_screener
+from .analyzer import financial_analyzer, AnalysisResult, Indicator
 from shared.schemas.indicators import ComprehensiveAnalysis
 from shared.schemas.common import BaseResponse
+from features.companies.data import COMPANIES
+import asyncio
 
 router = APIRouter()
+
+
+# ========================
+# 신규 분석 API (10개 지표)
+# ========================
+
+@router.get("/v2/analysis/{corp_code}")
+async def get_analysis_v2(
+    corp_code: str,
+    corp_name: str = Query(..., description="기업명"),
+    bsns_year: str = Query(..., description="사업연도 (예: 2023)"),
+    fs_div: str = Query("CFS", description="재무제표 구분 (OFS: 개별, CFS: 연결)"),
+):
+    """
+    종합 분석 v2 (10개 재무지표 기반)
+
+    수익성: ROE, 영업이익률, 순이익률
+    안정성: 부채비율, 이자보상배율, 유동비율
+    성장성: 매출성장률, 영업이익성장률, 순이익성장률
+    현금흐름: 현금흐름질 (버핏지표)
+    """
+    result = await financial_analyzer.analyze(corp_code, corp_name, bsns_year, fs_div)
+    if not result:
+        raise HTTPException(status_code=404, detail="재무제표 데이터를 찾을 수 없습니다.")
+
+    from datetime import datetime
+
+    return BaseResponse(
+        success=True,
+        message="분석이 완료되었습니다.",
+        data={
+            "corp_code": result.corp_code,
+            "corp_name": result.corp_name,
+            "year": result.year,
+            "fs_div": fs_div,
+            "total_score": result.total_score,
+            "signal": result.signal,
+            "recommendation": result.recommendation,
+            "indicators": [
+                {
+                    "name": ind.name,
+                    "value": ind.value,
+                    "score": ind.score,
+                    "grade": ind.grade,
+                    "description": ind.description,
+                    "good_criteria": ind.good_criteria,
+                    "trend": ind.trend,
+                }
+                for ind in result.indicators
+            ],
+            "analysis_date": datetime.now().strftime("%Y-%m-%d"),
+            "metrics": result.metrics,
+        },
+    )
+
+
+@router.get("/v2/screener")
+async def screener_v2(
+    year: str = Query(..., description="사업연도"),
+    fs_div: str = Query("CFS", description="재무제표 구분"),
+    limit: int = Query(30, description="조회 개수", ge=1, le=126),
+):
+    """
+    우량주 스크리너 v2 (10개 지표 기반)
+
+    전체 126개 기업을 분석하여 점수순으로 정렬합니다.
+    """
+    results = []
+    total = min(limit, len(COMPANIES))
+
+    for i, (corp_code, corp_name, stock_code, sector) in enumerate(COMPANIES[:limit]):
+        try:
+            result = await financial_analyzer.analyze(corp_code, corp_name, year, fs_div)
+            if result:
+                results.append({
+                    "rank": 0,  # 나중에 설정
+                    "corp_code": corp_code,
+                    "corp_name": corp_name,
+                    "stock_code": stock_code,
+                    "sector": sector,
+                    "total_score": result.total_score,
+                    "signal": result.signal,
+                    "indicators": {
+                        ind.name: {"value": ind.value, "grade": ind.grade}
+                        for ind in result.indicators
+                    },
+                })
+        except:
+            pass
+
+    # 점수순 정렬
+    results.sort(key=lambda x: x["total_score"], reverse=True)
+
+    # 순위 부여
+    for i, r in enumerate(results, 1):
+        r["rank"] = i
+
+    return BaseResponse(
+        success=True,
+        message=f"{len(results)}개 기업 분석 완료",
+        data={
+            "total_analyzed": len(results),
+            "year": year,
+            "stocks": results,
+        },
+    )
 
 
 @router.get("/analysis/{corp_code}", response_model=BaseResponse[ComprehensiveAnalysis])
