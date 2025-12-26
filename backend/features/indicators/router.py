@@ -88,6 +88,7 @@ async def screener_v2(
     """
     results = []
     filtered_out = []
+    no_data_corps = []  # 데이터 없는 기업 추적
 
     for corp_code, corp_name, stock_code, sector in COMPANIES[:limit]:
         try:
@@ -116,8 +117,10 @@ async def screener_v2(
                     results.append(item)
                 else:
                     filtered_out.append(item)
-        except Exception:
-            pass
+            else:
+                no_data_corps.append(corp_name)
+        except Exception as e:
+            no_data_corps.append(f"{corp_name}(오류: {str(e)[:30]})")
 
     # 점수순 정렬
     results.sort(key=lambda x: x["total_score"], reverse=True)
@@ -129,14 +132,16 @@ async def screener_v2(
 
     return BaseResponse(
         success=True,
-        message=f"{len(results)}개 우량주 / {len(filtered_out)}개 필터링 탈락",
+        message=f"{len(results)}개 우량주 / {len(filtered_out)}개 필터링 탈락 / {len(no_data_corps)}개 데이터 없음",
         data={
             "year": year,
             "total_analyzed": len(results) + len(filtered_out),
             "passed_count": len(results),
             "filtered_count": len(filtered_out),
+            "no_data_count": len(no_data_corps),
             "stocks": results,
             "filtered_out": filtered_out[:20],  # 탈락 종목 상위 20개만
+            "no_data_corps": no_data_corps[:30],  # 데이터 없는 종목 상위 30개 (디버깅용)
         },
     )
 

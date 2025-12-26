@@ -60,47 +60,66 @@ def extract_metrics(statements: list, term: str = "thstrm") -> FinancialMetrics:
 
     for item in statements:
         sj_div = item.get("sj_div", "")
-        account_id = item.get("account_id", "")
-        account_nm = item.get("account_nm", "")
+        account_id = item.get("account_id", "") or ""
+        account_nm = item.get("account_nm", "") or ""
         amount = parse_amount(item.get(amount_key))
+
+        # account_id에서 ifrs- 또는 ifrs_full_ prefix 처리
+        account_id_lower = account_id.lower()
 
         # 손익계산서 (IS)
         if sj_div == "IS":
-            if account_id == "ifrs_Revenue" or "매출액" in account_nm:
+            if "revenue" in account_id_lower or "매출액" in account_nm or account_nm == "수익(매출액)":
                 m.revenue = max(m.revenue, amount)
-            elif account_id == "ifrs_CostOfSales":
-                m.cost_of_sales = amount
-            elif account_id == "ifrs_GrossProfit":
-                m.gross_profit = amount
-            elif account_id == "dart_OperatingIncomeLoss" or "영업이익" in account_nm:
+            elif "costofsales" in account_id_lower or "매출원가" in account_nm:
+                m.cost_of_sales = max(m.cost_of_sales, amount)
+            elif "grossprofit" in account_id_lower or "매출총이익" in account_nm:
+                m.gross_profit = max(m.gross_profit, amount)
+            elif "operatingincome" in account_id_lower or "영업이익" in account_nm or "영업손익" in account_nm:
                 m.operating_income = max(m.operating_income, amount)
-            elif "금융비용" in account_nm or "이자비용" in account_nm:
+            elif "금융비용" in account_nm or "이자비용" in account_nm or "financecost" in account_id_lower:
                 m.finance_cost = max(m.finance_cost, amount)
-            elif account_id == "ifrs_ProfitLoss" or "당기순이익" in account_nm:
+            elif "profitloss" in account_id_lower or "당기순이익" in account_nm or "당기순손익" in account_nm or account_nm == "분기순이익":
                 m.net_income = max(m.net_income, amount)
 
         # 재무상태표 (BS)
         elif sj_div == "BS":
-            if account_id == "ifrs_Assets" or "자산총계" in account_nm:
+            # 자산총계
+            if "assets" in account_id_lower and "current" not in account_id_lower:
                 m.total_assets = max(m.total_assets, amount)
-            elif account_id == "ifrs_CurrentAssets" or "유동자산" in account_nm:
+            elif "자산총계" in account_nm or account_nm == "자산":
+                m.total_assets = max(m.total_assets, amount)
+            # 유동자산
+            elif "currentassets" in account_id_lower or "유동자산" in account_nm:
                 m.current_assets = max(m.current_assets, amount)
-            elif account_id == "ifrs_Liabilities" or "부채총계" in account_nm:
+            # 부채총계
+            elif "liabilities" in account_id_lower and "current" not in account_id_lower:
                 m.total_liabilities = max(m.total_liabilities, amount)
-            elif account_id == "ifrs_CurrentLiabilities" or "유동부채" in account_nm:
+            elif "부채총계" in account_nm or account_nm == "부채":
+                m.total_liabilities = max(m.total_liabilities, amount)
+            # 유동부채
+            elif "currentliabilities" in account_id_lower or "유동부채" in account_nm:
                 m.current_liabilities = max(m.current_liabilities, amount)
-            elif account_id == "ifrs_Equity" or "자본총계" in account_nm or account_nm == "자본":
+            # 자본총계 (다양한 형태 처리)
+            elif "equity" in account_id_lower and "retained" not in account_id_lower:
                 m.total_equity = max(m.total_equity, amount)
-            elif account_id == "ifrs_RetainedEarnings" or "이익잉여금" in account_nm:
+            elif "자본총계" in account_nm or "자본 총계" in account_nm:
+                m.total_equity = max(m.total_equity, amount)
+            elif account_nm == "자본" or account_nm == "자본계":
+                m.total_equity = max(m.total_equity, amount)
+            elif "지배기업" in account_nm and "지분" in account_nm:
+                m.total_equity = max(m.total_equity, amount)
+            # 이익잉여금
+            elif "retainedearnings" in account_id_lower or "이익잉여금" in account_nm:
                 m.retained_earnings = max(m.retained_earnings, amount)
 
         # 현금흐름표 (CF)
         elif sj_div == "CF":
-            if account_id == "ifrs_CashFlowsFromUsedInOperatingActivities":
+            if "operating" in account_id_lower or "영업활동" in account_nm:
                 m.operating_cash_flow = amount
-            elif account_id == "ifrs_CashFlowsFromUsedInInvestingActivities":
+            elif "investing" in account_id_lower or "투자활동" in account_nm:
                 m.investing_cash_flow = amount
-            elif account_id == "ifrs_CashFlowsFromUsedInFinancingActivities":
+            elif "financing" in account_id_lower or "재무활동" in account_nm:
                 m.financing_cash_flow = amount
 
     return m
