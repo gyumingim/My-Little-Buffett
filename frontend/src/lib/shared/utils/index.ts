@@ -86,3 +86,6 @@ export function getScoreColor(score: number): string {
   if (score >= 20) return 'var(--signal-sell)';
   return 'var(--signal-strong-sell)';
 }
+
+// 즐겨찾기
+export * from './watchlist';

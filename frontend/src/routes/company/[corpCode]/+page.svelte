@@ -4,7 +4,7 @@
   import { api } from '$shared/api';
   import { Loading, Card, Button } from '$shared/ui';
   import { IndicatorCard, ScoreGauge } from '$widgets/indicator-card';
-  import { formatAmount, formatPercent, formatRatio } from '$shared/utils';
+  import { formatAmount, formatPercent, formatRatio, addToWatchlist, removeFromWatchlist, isInWatchlist } from '$shared/utils';
 
   interface AnalysisData {
     corp_code: string;
@@ -34,6 +34,7 @@
   let error = '';
   let analysis: AnalysisData | null = null;
   let trend: TrendData | null = null;
+  let inWatchlist = false;
 
   let corpCode: string;
   let corpName: string;
@@ -46,8 +47,18 @@
   $: fsDiv = $page.url.searchParams.get('fs_div') ?? 'OFS';
 
   onMount(async () => {
+    inWatchlist = isInWatchlist(corpCode);
     await fetchData();
   });
+
+  function toggleWatchlist() {
+    if (inWatchlist) {
+      removeFromWatchlist(corpCode);
+    } else {
+      addToWatchlist({ corp_code: corpCode, corp_name: corpName, stock_code: '' });
+    }
+    inWatchlist = !inWatchlist;
+  }
 
   async function fetchData() {
     loading = true;
@@ -110,7 +121,12 @@
   {:else if analysis}
     <div class="analysis-header">
       <div class="company-info">
-        <h1>{analysis.corp_name}</h1>
+        <div class="title-row">
+          <h1>{analysis.corp_name}</h1>
+          <button class="watchlist-btn" class:active={inWatchlist} on:click={toggleWatchlist}>
+            {inWatchlist ? '★' : '☆'}
+          </button>
+        </div>
         <p>고유번호: {analysis.corp_code} | {analysis.bsns_year}년 사업보고서 기준</p>
       </div>
       <p class="analysis-date">분석일: {analysis.analysis_date}</p>
@@ -251,10 +267,33 @@
     gap: 1rem;
   }
 
+  .title-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+
   .company-info h1 {
     font-size: 2rem;
     font-weight: 700;
     margin: 0;
+  }
+
+  .watchlist-btn {
+    font-size: 1.5rem;
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--text-secondary);
+    transition: color 0.2s;
+  }
+
+  .watchlist-btn:hover {
+    color: var(--color-primary);
+  }
+
+  .watchlist-btn.active {
+    color: #fbbf24;
   }
 
   .company-info p {

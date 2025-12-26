@@ -1,7 +1,9 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { api } from '$shared/api';
   import { Button, Card, Input } from '$shared/ui';
+  import { getWatchlist, removeFromWatchlist, type WatchlistItem } from '$shared/utils';
 
   let corpCode = '';
   let corpName = '';
@@ -12,8 +14,13 @@
   let searchResults: { corp_code: string; corp_name: string; stock_code: string; sector: string }[] = [];
   let showResults = false;
   let searchTimeout: ReturnType<typeof setTimeout>;
+  let watchlist: WatchlistItem[] = [];
 
   const years = Array.from({ length: 5 }, (_, i) => (new Date().getFullYear() - i).toString());
+
+  onMount(() => {
+    watchlist = getWatchlist();
+  });
 
   async function handleSearch() {
     if (searchQuery.length < 1) {
@@ -45,6 +52,15 @@
       return;
     }
     goto(`/company/${corpCode}?name=${encodeURIComponent(corpName)}&year=${bsnsYear}&fs_div=${fsDiv}`);
+  }
+
+  function removeWatchlistItem(corpCode: string) {
+    removeFromWatchlist(corpCode);
+    watchlist = getWatchlist();
+  }
+
+  function goToCompany(item: WatchlistItem) {
+    goto(`/company/${item.corp_code}?name=${encodeURIComponent(item.corp_name)}&year=${bsnsYear}&fs_div=${fsDiv}`);
   }
 </script>
 
@@ -115,6 +131,22 @@
       <Button type="submit" variant="primary">분석 시작</Button>
     </form>
   </Card>
+
+  {#if watchlist.length > 0}
+    <section class="watchlist">
+      <h2>★ 즐겨찾기</h2>
+      <div class="watchlist-grid">
+        {#each watchlist as item}
+          <div class="watchlist-item">
+            <button class="watchlist-link" on:click={() => goToCompany(item)}>
+              {item.corp_name}
+            </button>
+            <button class="remove-btn" on:click={() => removeWatchlistItem(item.corp_code)}>×</button>
+          </div>
+        {/each}
+      </div>
+    </section>
+  {/if}
 
   <section class="quick-actions">
     <h2>빠른 분석</h2>
@@ -281,6 +313,58 @@
   .select:focus {
     outline: none;
     border-color: var(--color-primary);
+  }
+
+  .watchlist {
+    margin-top: 2rem;
+  }
+
+  .watchlist h2 {
+    font-size: 1.125rem;
+    font-weight: 600;
+    margin-bottom: 0.75rem;
+    color: #fbbf24;
+  }
+
+  .watchlist-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .watchlist-item {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    background: var(--bg-tertiary);
+    border-radius: 9999px;
+    padding-left: 0.75rem;
+  }
+
+  .watchlist-link {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 0.875rem;
+    font-weight: 500;
+    padding: 0.5rem 0;
+  }
+
+  .watchlist-link:hover {
+    color: var(--color-primary);
+  }
+
+  .remove-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--text-secondary);
+    font-size: 1rem;
+    padding: 0.5rem 0.75rem;
+  }
+
+  .remove-btn:hover {
+    color: var(--color-danger);
   }
 
   .quick-actions {
