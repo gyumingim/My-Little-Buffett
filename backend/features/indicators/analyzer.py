@@ -187,16 +187,23 @@ class BuffettAnalyzer:
     """버핏형 가치투자 분석기"""
 
     async def analyze(self, corp_code: str, corp_name: str, year: str, fs_div: str = "CFS") -> AnalysisResult | None:
-        """종합 분석 수행"""
-        # 재무제표 조회
-        data = await dart_client.get_financial_statements(
-            corp_code=corp_code, bsns_year=year, reprt_code="11011", fs_div=fs_div
-        )
+        """종합 분석 수행 (데이터 없으면 최대 3년 전까지 fallback)"""
 
-        if data.get("status") != "000":
-            return None
+        # 연도 fallback 시도 (요청 연도 → 1년 전 → 2년 전 → 3년 전)
+        statements = None
+        actual_year = year
 
-        statements = data.get("list", [])
+        for year_offset in range(4):  # 0, 1, 2, 3년 전
+            try_year = str(int(year) - year_offset)
+            data = await dart_client.get_financial_statements(
+                corp_code=corp_code, bsns_year=try_year, reprt_code="11011", fs_div=fs_div
+            )
+
+            if data.get("status") == "000" and data.get("list"):
+                statements = data.get("list", [])
+                actual_year = try_year
+                break
+
         if not statements:
             return None
 
@@ -244,10 +251,14 @@ class BuffettAnalyzer:
         # 신호 결정
         signal, recommendation = self._get_signal(total_score, filter_result)
 
+        # fallback 발생 시 recommendation에 표시
+        if actual_year != year:
+            recommendation = f"[{actual_year}년 데이터 사용] " + recommendation
+
         return AnalysisResult(
             corp_code=corp_code,
             corp_name=corp_name,
-            year=year,
+            year=actual_year,  # 실제 데이터가 있는 연도
             fs_div=fs_div,
             indicators=indicators,
             total_score=round(total_score, 1),
