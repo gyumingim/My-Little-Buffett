@@ -101,18 +101,22 @@ def extract_metrics(statements: list, term: str = "thstrm") -> FinancialMetrics:
 
         # 재무상태표 (BS)
         elif sj_div == "BS":
+            # "자본과부채총계" 같은 합계 항목은 무시
+            if "자본과부채" in account_nm or "부채와자본" in account_nm:
+                continue
+
             # 자산총계
             if "assets" in account_id_lower and "current" not in account_id_lower and "net" not in account_id_lower:
                 m.total_assets = max(m.total_assets, amount)
-            elif "자산총계" in account_nm or account_nm == "자산" or account_nm == "자산 계":
+            elif account_nm == "자산총계" or account_nm == "자산" or account_nm == "자산 계":
                 m.total_assets = max(m.total_assets, amount)
             # 유동자산
             elif "currentassets" in account_id_lower or "유동자산" in account_nm:
                 m.current_assets = max(m.current_assets, amount)
-            # 부채총계
-            elif "liabilities" in account_id_lower and "current" not in account_id_lower:
+            # 부채총계 (정확한 매칭)
+            elif "liabilities" in account_id_lower and "current" not in account_id_lower and "asset" not in account_id_lower:
                 m.total_liabilities = max(m.total_liabilities, amount)
-            elif "부채총계" in account_nm or account_nm == "부채" or account_nm == "부채 계":
+            elif account_nm == "부채총계" or account_nm == "부채" or account_nm == "부채 계":
                 m.total_liabilities = max(m.total_liabilities, amount)
             # 유동부채
             elif "currentliabilities" in account_id_lower or "유동부채" in account_nm:
@@ -120,7 +124,7 @@ def extract_metrics(statements: list, term: str = "thstrm") -> FinancialMetrics:
             # 자본총계 (다양한 형태 처리)
             elif "equity" in account_id_lower and "retained" not in account_id_lower and "minority" not in account_id_lower:
                 m.total_equity = max(m.total_equity, amount)
-            elif "자본총계" in account_nm or "자본 총계" in account_nm:
+            elif account_nm == "자본총계" or account_nm == "자본 총계":
                 m.total_equity = max(m.total_equity, amount)
             elif account_nm in ["자본", "자본계", "자본 계"]:
                 m.total_equity = max(m.total_equity, amount)
@@ -488,34 +492,81 @@ class BuffettAnalyzer:
         )
 
     def _score_to_grade(self, score: float, max_score: float) -> str:
-        """점수를 등급으로 변환"""
+        """점수를 등급으로 변환 (S~F 세분화)"""
         ratio = score / max_score if max_score > 0 else 0
-        if ratio >= 0.8:
+
+        # S급 (95% 이상) - 탁월
+        if ratio >= 0.95:
+            return "S"
+        # A급 (85~95%)
+        elif ratio >= 0.90:
+            return "A+"
+        elif ratio >= 0.85:
             return "A"
-        elif ratio >= 0.6:
+        elif ratio >= 0.80:
+            return "A-"
+        # B급 (70~80%)
+        elif ratio >= 0.77:
+            return "B+"
+        elif ratio >= 0.73:
             return "B"
-        elif ratio >= 0.4:
+        elif ratio >= 0.70:
+            return "B-"
+        # C급 (55~70%)
+        elif ratio >= 0.65:
+            return "C+"
+        elif ratio >= 0.60:
             return "C"
-        elif ratio >= 0.2:
+        elif ratio >= 0.55:
+            return "C-"
+        # D급 (35~55%)
+        elif ratio >= 0.45:
+            return "D+"
+        elif ratio >= 0.40:
             return "D"
-        return "F"
+        elif ratio >= 0.35:
+            return "D-"
+        # E급 (15~35%)
+        elif ratio >= 0.25:
+            return "E+"
+        elif ratio >= 0.20:
+            return "E"
+        elif ratio >= 0.15:
+            return "E-"
+        # F급 (15% 미만)
+        elif ratio >= 0.10:
+            return "F+"
+        elif ratio >= 0.05:
+            return "F"
+        return "F-"
 
     def _get_signal(self, total_score: float, filter_result: FilterResult) -> tuple[str, str]:
-        """매매 신호 결정"""
+        """매매 신호 결정 (10단계 세분화)"""
         if not filter_result.passed:
             reasons = ", ".join(filter_result.failed_reasons[:2])
             return "투자부적격", f"필터링 탈락: {reasons}"
 
-        if total_score >= 80:
-            return "강력매수", "모든 지표가 버핏 기준을 충족합니다. 장기 투자 적합."
+        # 10단계 세분화된 신호
+        if total_score >= 90:
+            return "S급 강력매수", "최상위권 종목. 버핏이 사랑할 기업. 장기 보유 강력 추천."
+        elif total_score >= 80:
+            return "A급 강력매수", "모든 지표가 버핏 기준 충족. 장기 투자 적합."
+        elif total_score >= 72:
+            return "A급 매수", "대부분의 지표가 우수. 적극적 투자 검토 권장."
         elif total_score >= 65:
-            return "매수", "대부분의 지표가 우수합니다. 투자 검토 권장."
+            return "B급 매수", "주요 지표 양호. 투자 검토 권장."
+        elif total_score >= 58:
+            return "B급 관망(매수우위)", "괜찮은 편. 추가 분석 후 투자 고려."
         elif total_score >= 50:
-            return "관망", "일부 지표가 부족합니다. 신중한 검토 필요."
+            return "C급 관망", "일부 지표 부족. 신중한 검토 필요."
+        elif total_score >= 42:
+            return "C급 관망(매도우위)", "부정적 지표 다수. 투자 주의."
         elif total_score >= 35:
-            return "매도", "여러 지표가 부정적입니다. 투자 주의."
+            return "D급 매도", "여러 지표 부정적. 보유 시 손절 검토."
+        elif total_score >= 25:
+            return "D급 강력매도", "대부분 지표 미달. 투자 회피."
         else:
-            return "강력매도", "대부분의 지표가 미달입니다. 투자 회피 권고."
+            return "F급 회피", "심각한 재무 상태. 절대 투자 금지."
 
 
 # 싱글톤

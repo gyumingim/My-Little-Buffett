@@ -460,21 +460,32 @@ async def debug_analysis(
 
     # 주요 항목 추출 (IS, BS, CF)
     key_items = []
+    is_items = []  # 손익계산서 전체 항목 (디버깅용)
+
     for item in statements:
         sj_div = item.get("sj_div", "")
         account_nm = item.get("account_nm", "")
+        account_id = item.get("account_id", "")
         thstrm = item.get("thstrm_amount", "")
 
+        # 손익계산서 전체 (상위 20개)
+        if sj_div == "IS" and len(is_items) < 20:
+            is_items.append({"name": account_nm, "id": account_id, "amount": thstrm})
+
         # 주요 항목만 필터
-        if sj_div == "IS" and any(kw in account_nm for kw in ["매출", "영업이익", "순이익", "손익"]):
+        if sj_div == "IS" and any(kw in account_nm for kw in ["매출", "영업", "순이익", "손익", "이익"]):
             key_items.append({"type": "IS", "name": account_nm, "amount": thstrm})
-        elif sj_div == "BS" and any(kw in account_nm for kw in ["자산", "부채", "자본"]):
+        elif sj_div == "BS" and any(kw in account_nm for kw in ["자산총계", "부채총계", "자본총계", "자본과부채"]):
             key_items.append({"type": "BS", "name": account_nm, "amount": thstrm})
         elif sj_div == "CF" and any(kw in account_nm for kw in ["영업활동", "투자활동", "재무활동"]):
             key_items.append({"type": "CF", "name": account_nm, "amount": thstrm})
 
     # 파싱 결과
     metrics = extract_metrics(statements, "thstrm")
+
+    # ROE 계산
+    roe = (metrics.net_income / metrics.total_equity * 100) if metrics.total_equity > 0 else 0
+    debt_ratio = (metrics.total_liabilities / metrics.total_equity * 100) if metrics.total_equity > 0 else 0
 
     return BaseResponse(
         success=True,
@@ -483,6 +494,7 @@ async def debug_analysis(
             "dart_status": data.get("status"),
             "total_items": len(statements),
             "key_items": key_items[:30],  # 상위 30개만
+            "is_items": is_items,  # 손익계산서 전체 항목 (디버깅)
             "parsed_metrics": {
                 "revenue": metrics.revenue,
                 "operating_income": metrics.operating_income,
@@ -491,6 +503,10 @@ async def debug_analysis(
                 "total_liabilities": metrics.total_liabilities,
                 "total_equity": metrics.total_equity,
                 "operating_cash_flow": metrics.operating_cash_flow,
+            },
+            "calculated_ratios": {
+                "roe_percent": round(roe, 2),
+                "debt_ratio_percent": round(debt_ratio, 2),
             }
         }
     )
