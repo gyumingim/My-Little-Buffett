@@ -23,23 +23,26 @@
     passed_count: number;
     filtered_count: number;
     no_data_count: number;
+    from_cache: boolean;
     stocks: Stock[];
     filtered_out: Stock[];
     no_data_corps: string[];
   }
 
   let loading = true;
+  let refreshing = false;
   let error = '';
   let data: ScreenerData | null = null;
   let showFilteredOut = false;
 
   // 필터 옵션
-  let year = '2024';
+  let year = '2023';
   let fsDiv = 'CFS';
   let limit = 100;
+  let useCache = true;
 
-  const yearOptions = ['2024', '2023', '2022', '2021'];
-  const limitOptions = [50, 100, 150, 200, 250];
+  const yearOptions = ['2024', '2023', '2022', '2021', '2020'];
+  const limitOptions = [100, 500, 1000, 2000, 4000];
 
   onMount(async () => {
     await fetchData();
@@ -50,7 +53,7 @@
     error = '';
 
     try {
-      const response = await api.screenerV2(year, fsDiv, limit);
+      const response = await api.screenerV2(year, fsDiv, limit, useCache);
 
       if (response.success && response.data) {
         data = response.data as ScreenerData;
@@ -63,6 +66,14 @@
     } finally {
       loading = false;
     }
+  }
+
+  async function refreshData() {
+    refreshing = true;
+    useCache = false;
+    await fetchData();
+    useCache = true;
+    refreshing = false;
   }
 
   function goToCompany(stock: Stock) {
@@ -141,7 +152,10 @@
       </div>
 
       <Button variant="primary" on:click={fetchData}>
-        분석 시작
+        조회
+      </Button>
+      <Button variant="secondary" on:click={refreshData} disabled={refreshing}>
+        {refreshing ? '분석 중...' : '새로 분석'}
       </Button>
     </div>
   </Card>
@@ -159,6 +173,13 @@
       </div>
     </Card>
   {:else if data}
+    <!-- 캐시 정보 배너 -->
+    {#if data.from_cache}
+      <div class="cache-banner">
+        DB에 저장된 분석 결과입니다. 최신 데이터로 갱신하려면 "새로 분석" 버튼을 클릭하세요.
+      </div>
+    {/if}
+
     <!-- 요약 카드 -->
     <div class="summary-cards">
       <div class="summary-card total">
@@ -331,6 +352,17 @@
   .error-message {
     color: var(--color-danger);
     margin-bottom: 1rem;
+  }
+
+  /* 캐시 배너 */
+  .cache-banner {
+    background: #dbeafe;
+    color: #1e40af;
+    padding: 0.75rem 1rem;
+    border-radius: var(--border-radius);
+    margin-bottom: 1rem;
+    font-size: 0.875rem;
+    text-align: center;
   }
 
   /* 요약 카드 */

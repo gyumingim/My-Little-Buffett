@@ -1,12 +1,19 @@
 """지표 분석 API 라우터 - 버핏형 가치투자 분석"""
 
 from datetime import datetime
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
 from .service import indicator_service
 from .trend_service import trend_service, stock_screener
 from .analyzer import financial_analyzer
 from shared.schemas.indicators import ComprehensiveAnalysis
 from shared.schemas.common import BaseResponse
+from shared.cache.sqlite_cache import (
+    save_buffett_analysis,
+    get_buffett_analysis,
+    get_buffett_analysis_count,
+    get_available_years,
+    clear_buffett_analysis,
+)
 from features.companies.data import COMPANIES
 
 router = APIRouter()
@@ -78,22 +85,78 @@ async def get_analysis_v2(
 async def screener_v2(
     year: str = Query(..., description="사업연도"),
     fs_div: str = Query("CFS", description="재무제표 구분"),
-    limit: int = Query(100, description="조회 개수", ge=1, le=500),
+    limit: int = Query(100, description="조회 개수", ge=1, le=4000),
+    use_cache: bool = Query(True, description="저장된 분석 결과 사용"),
 ):
     """
     버핏형 우량주 스크리너
 
     전체 기업을 버핏 기준으로 분석하여 점수순 정렬.
     필터링 탈락 기업은 별도 표시.
+    분석 결과는 DB에 영구 저장됨.
     """
+    # 캐시된 결과가 있으면 사용
+    if use_cache:
+        cached_count = get_buffett_analysis_count(year, fs_div)
+        if cached_count > 0:
+            cached = get_buffett_analysis(year, fs_div)
+            results = [r for r in cached if r["filter_passed"]][:limit]
+            filtered_out = [r for r in cached if not r["filter_passed"]][:20]
+
+            # 순위 부여
+            for i, r in enumerate(results, 1):
+                r["rank"] = i
+
+            return BaseResponse(
+                success=True,
+                message=f"[DB] {len(results)}개 우량주 / {len(filtered_out)}개 필터링 탈락 (저장된 {cached_count}개 중)",
+                data={
+                    "year": year,
+                    "total_analyzed": cached_count,
+                    "passed_count": len([r for r in cached if r["filter_passed"]]),
+                    "filtered_count": len([r for r in cached if not r["filter_passed"]]),
+                    "no_data_count": 0,
+                    "from_cache": True,
+                    "stocks": results,
+                    "filtered_out": filtered_out,
+                    "no_data_corps": [],
+                },
+            )
+
+    # 새로 분석
     results = []
     filtered_out = []
-    no_data_corps = []  # 데이터 없는 기업 추적
+    no_data_corps = []
 
     for corp_code, corp_name, stock_code, sector in COMPANIES[:limit]:
         try:
             result = await financial_analyzer.analyze(corp_code, corp_name, year, fs_div)
             if result:
+                indicators_dict = {
+                    ind.name: {
+                        "value": ind.value,
+                        "score": ind.score,
+                        "max_score": ind.max_score,
+                        "grade": ind.grade,
+                    }
+                    for ind in result.indicators
+                }
+
+                # DB에 저장
+                save_buffett_analysis(
+                    corp_code=corp_code,
+                    corp_name=corp_name,
+                    stock_code=stock_code,
+                    sector=sector,
+                    bsns_year=year,
+                    fs_div=fs_div,
+                    total_score=result.total_score,
+                    signal=result.signal,
+                    filter_passed=result.filter_result.passed,
+                    filter_reasons=result.filter_result.failed_reasons,
+                    indicators=indicators_dict,
+                )
+
                 item = {
                     "corp_code": corp_code,
                     "corp_name": corp_name,
@@ -103,15 +166,7 @@ async def screener_v2(
                     "signal": result.signal,
                     "filter_passed": result.filter_result.passed,
                     "filter_reasons": result.filter_result.failed_reasons,
-                    "indicators": {
-                        ind.name: {
-                            "value": ind.value,
-                            "score": ind.score,
-                            "max_score": ind.max_score,
-                            "grade": ind.grade,
-                        }
-                        for ind in result.indicators
-                    },
+                    "indicators": indicators_dict,
                 }
                 if result.filter_result.passed:
                     results.append(item)
@@ -139,9 +194,92 @@ async def screener_v2(
             "passed_count": len(results),
             "filtered_count": len(filtered_out),
             "no_data_count": len(no_data_corps),
+            "from_cache": False,
             "stocks": results,
-            "filtered_out": filtered_out[:20],  # 탈락 종목 상위 20개만
-            "no_data_corps": no_data_corps[:30],  # 데이터 없는 종목 상위 30개 (디버깅용)
+            "filtered_out": filtered_out[:20],
+            "no_data_corps": no_data_corps[:30],
+        },
+    )
+
+
+@router.get("/v2/screener/years")
+async def get_screener_years():
+    """저장된 분석 연도 목록 조회"""
+    years = get_available_years()
+    return BaseResponse(
+        success=True,
+        message=f"{len(years)}개 연도 데이터 있음",
+        data={"years": years}
+    )
+
+
+@router.post("/v2/screener/refresh")
+async def refresh_screener(
+    year: str = Query(..., description="사업연도"),
+    fs_div: str = Query("CFS", description="재무제표 구분"),
+    limit: int = Query(100, description="분석 개수", ge=1, le=4000),
+):
+    """
+    스크리너 데이터 새로고침 (기존 캐시 삭제 후 재분석)
+    """
+    # 해당 연도/재무제표 캐시 삭제
+    clear_buffett_analysis(year, fs_div)
+
+    # 새로 분석 (use_cache=False로 호출)
+    results = []
+    filtered_out = []
+    no_data_corps = []
+    saved_count = 0
+
+    for corp_code, corp_name, stock_code, sector in COMPANIES[:limit]:
+        try:
+            result = await financial_analyzer.analyze(corp_code, corp_name, year, fs_div)
+            if result:
+                indicators_dict = {
+                    ind.name: {
+                        "value": ind.value,
+                        "score": ind.score,
+                        "max_score": ind.max_score,
+                        "grade": ind.grade,
+                    }
+                    for ind in result.indicators
+                }
+
+                # DB에 저장
+                save_buffett_analysis(
+                    corp_code=corp_code,
+                    corp_name=corp_name,
+                    stock_code=stock_code,
+                    sector=sector,
+                    bsns_year=year,
+                    fs_div=fs_div,
+                    total_score=result.total_score,
+                    signal=result.signal,
+                    filter_passed=result.filter_result.passed,
+                    filter_reasons=result.filter_result.failed_reasons,
+                    indicators=indicators_dict,
+                )
+                saved_count += 1
+
+                if result.filter_result.passed:
+                    results.append(corp_name)
+                else:
+                    filtered_out.append(corp_name)
+            else:
+                no_data_corps.append(corp_name)
+        except Exception as e:
+            no_data_corps.append(f"{corp_name}(오류)")
+
+    return BaseResponse(
+        success=True,
+        message=f"{saved_count}개 기업 분석 완료 및 DB 저장",
+        data={
+            "year": year,
+            "fs_div": fs_div,
+            "saved_count": saved_count,
+            "passed_count": len(results),
+            "filtered_count": len(filtered_out),
+            "no_data_count": len(no_data_corps),
         },
     )
 

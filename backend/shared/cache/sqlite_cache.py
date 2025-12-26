@@ -44,6 +44,28 @@ def init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_corp_code ON api_data(corp_code)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_bsns_year ON api_data(bsns_year)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_endpoint ON api_data(endpoint)")
+
+        # 버핏 분석 결과 저장 테이블
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS buffett_analysis (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                corp_code TEXT NOT NULL,
+                corp_name TEXT NOT NULL,
+                stock_code TEXT,
+                sector TEXT,
+                bsns_year TEXT NOT NULL,
+                fs_div TEXT NOT NULL,
+                total_score REAL,
+                signal TEXT,
+                filter_passed INTEGER,
+                filter_reasons TEXT,
+                indicators TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(corp_code, bsns_year, fs_div)
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ba_year ON buffett_analysis(bsns_year)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ba_score ON buffett_analysis(total_score DESC)")
         conn.commit()
 
 
@@ -138,6 +160,112 @@ def get_stored_companies() -> list[str]:
 def cleanup_expired():
     """호환성을 위한 빈 함수 (영구 저장이므로 삭제 안함)"""
     pass
+
+
+# ========================
+# 버핏 분석 결과 저장/조회
+# ========================
+
+def save_buffett_analysis(
+    corp_code: str,
+    corp_name: str,
+    stock_code: str,
+    sector: str,
+    bsns_year: str,
+    fs_div: str,
+    total_score: float,
+    signal: str,
+    filter_passed: bool,
+    filter_reasons: list[str],
+    indicators: dict
+):
+    """버핏 분석 결과 저장"""
+    with get_connection() as conn:
+        conn.execute("""
+            INSERT OR REPLACE INTO buffett_analysis
+            (corp_code, corp_name, stock_code, sector, bsns_year, fs_div,
+             total_score, signal, filter_passed, filter_reasons, indicators, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            corp_code,
+            corp_name,
+            stock_code,
+            sector,
+            bsns_year,
+            fs_div,
+            total_score,
+            signal,
+            1 if filter_passed else 0,
+            json.dumps(filter_reasons, ensure_ascii=False),
+            json.dumps(indicators, ensure_ascii=False),
+            datetime.now().isoformat()
+        ))
+        conn.commit()
+
+
+def get_buffett_analysis(bsns_year: str, fs_div: str = "CFS") -> list[dict]:
+    """저장된 버핏 분석 결과 조회 (점수순)"""
+    with get_connection() as conn:
+        rows = conn.execute("""
+            SELECT corp_code, corp_name, stock_code, sector, bsns_year, fs_div,
+                   total_score, signal, filter_passed, filter_reasons, indicators, created_at
+            FROM buffett_analysis
+            WHERE bsns_year = ? AND fs_div = ?
+            ORDER BY total_score DESC
+        """, (bsns_year, fs_div)).fetchall()
+
+        results = []
+        for row in rows:
+            results.append({
+                "corp_code": row["corp_code"],
+                "corp_name": row["corp_name"],
+                "stock_code": row["stock_code"],
+                "sector": row["sector"],
+                "total_score": row["total_score"],
+                "signal": row["signal"],
+                "filter_passed": bool(row["filter_passed"]),
+                "filter_reasons": json.loads(row["filter_reasons"]) if row["filter_reasons"] else [],
+                "indicators": json.loads(row["indicators"]) if row["indicators"] else {},
+                "created_at": row["created_at"]
+            })
+        return results
+
+
+def get_buffett_analysis_count(bsns_year: str, fs_div: str = "CFS") -> int:
+    """저장된 분석 결과 수"""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM buffett_analysis WHERE bsns_year = ? AND fs_div = ?",
+            (bsns_year, fs_div)
+        ).fetchone()
+        return row[0] if row else 0
+
+
+def get_available_years() -> list[str]:
+    """분석 결과가 있는 연도 목록"""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT bsns_year FROM buffett_analysis ORDER BY bsns_year DESC"
+        ).fetchall()
+        return [row["bsns_year"] for row in rows]
+
+
+def clear_buffett_analysis(bsns_year: str = None, fs_div: str = None):
+    """분석 결과 삭제 (연도/재무제표 지정 가능)"""
+    with get_connection() as conn:
+        if bsns_year and fs_div:
+            conn.execute(
+                "DELETE FROM buffett_analysis WHERE bsns_year = ? AND fs_div = ?",
+                (bsns_year, fs_div)
+            )
+        elif bsns_year:
+            conn.execute(
+                "DELETE FROM buffett_analysis WHERE bsns_year = ?",
+                (bsns_year,)
+            )
+        else:
+            conn.execute("DELETE FROM buffett_analysis")
+        conn.commit()
 
 
 # 하위 호환성

@@ -53,11 +53,12 @@ export const api = {
   /**
    * 우량주 스크리너 v2 (10개 지표 기반)
    */
-  async screenerV2(year: string, fsDiv: string = 'CFS', limit: number = 30) {
+  async screenerV2(year: string, fsDiv: string = 'CFS', limit: number = 100, useCache: boolean = true) {
     const params = new URLSearchParams({
       year,
       fs_div: fsDiv,
-      limit: limit.toString()
+      limit: limit.toString(),
+      use_cache: useCache.toString()
     });
     return request(`/indicators/v2/screener?${params}`);
   },
