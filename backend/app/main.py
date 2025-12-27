@@ -6,6 +6,7 @@ from features.indicators.router import router as indicators_router
 from features.disclosures.router import router as disclosures_router
 from features.financial_statements.router import router as statements_router
 from features.companies.router import router as companies_router
+from features.backtest.router import router as backtest_router
 
 settings = get_settings()
 
@@ -29,6 +30,7 @@ app.include_router(indicators_router, prefix="/api/indicators", tags=["indicator
 app.include_router(disclosures_router, prefix="/api/disclosures", tags=["disclosures"])
 app.include_router(statements_router, prefix="/api/statements", tags=["statements"])
 app.include_router(companies_router, prefix="/api/companies", tags=["companies"])
+app.include_router(backtest_router, prefix="/api/backtest", tags=["backtest"])
 
 
 @app.get("/")

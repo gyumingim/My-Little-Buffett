@@ -12,6 +12,7 @@
       <nav class="nav">
         <a href="/">홈</a>
         <a href="/screener">스크리너</a>
+        <a href="/backtest">백테스팅</a>
         <a href="https://opendart.fss.or.kr" target="_blank" rel="noopener">OpenDART</a>
       </nav>
     </div>

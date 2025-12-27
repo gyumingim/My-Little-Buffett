@@ -1,5 +1,11 @@
-"""지표 분석 API 라우터 - 버핏형 가치투자 분석"""
+"""지표 분석 API 라우터 - 버핏형 가치투자 분석
 
+API 호출과 분석이 완전히 분리됨:
+1. /fetch - DART API 호출해서 CSV 저장만
+2. /analyze - CSV 읽어서 점수 계산만
+"""
+
+import asyncio
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
 from .service import indicator_service
@@ -7,13 +13,15 @@ from .trend_service import trend_service, stock_screener
 from .analyzer import financial_analyzer
 from shared.schemas.indicators import ComprehensiveAnalysis
 from shared.schemas.common import BaseResponse
-from shared.cache.sqlite_cache import (
+from shared.cache import (
     save_buffett_analysis,
     get_buffett_analysis,
     get_buffett_analysis_count,
     get_available_years,
     clear_buffett_analysis,
 )
+from shared.storage.csv_storage import csv_storage
+from shared.api.dart_client import dart_client
 from features.companies.data import COMPANIES
 
 router = APIRouter()
@@ -128,8 +136,44 @@ async def screener_v2(
     filtered_out = []
     no_data_corps = []
 
-    for corp_code, corp_name, stock_code, sector in COMPANIES[:limit]:
+    # COMPANIES 전체 사용 (limit이 전체보다 크면 전체 사용)
+    companies_to_analyze = COMPANIES if limit >= len(COMPANIES) else COMPANIES[:limit]
+
+    # 병렬 처리 함수
+    async def analyze_company(corp_code, corp_name, stock_code, sector):
         try:
+            # === 1단계: 쓰레기 데이터 분리수거 (Gemini 필터) ===
+            from features.companies.filter import is_trash_stock
+            is_trash, trash_reason = is_trash_stock(corp_name, stock_code)
+            if is_trash:
+                # 쓰레기 주식은 DB에 저장하되, 필터 탈락으로 표시
+                save_buffett_analysis(
+                    corp_code=corp_code,
+                    corp_name=corp_name,
+                    stock_code=stock_code,
+                    sector=sector,
+                    bsns_year=year,
+                    fs_div=fs_div,
+                    total_score=0,
+                    signal="투자금지",
+                    filter_passed=False,
+                    filter_reasons=[f"쓰레기주식: {trash_reason}"],
+                    indicators={},
+                    data_source="1단계 필터 탈락",
+                )
+                return {
+                    "corp_code": corp_code,
+                    "corp_name": corp_name,
+                    "stock_code": stock_code,
+                    "sector": sector,
+                    "total_score": 0,
+                    "signal": "투자금지",
+                    "filter_passed": False,
+                    "filter_reasons": [f"쓰레기주식: {trash_reason}"],
+                    "indicators": {},
+                }
+
+            # === 2단계: 재무제표 분석 ===
             result = await financial_analyzer.analyze(corp_code, corp_name, year, fs_div)
             if result:
                 indicators_dict = {
@@ -155,9 +199,10 @@ async def screener_v2(
                     filter_passed=result.filter_result.passed,
                     filter_reasons=result.filter_result.failed_reasons,
                     indicators=indicators_dict,
+                    data_source=result.data_source,
                 )
 
-                item = {
+                return {
                     "corp_code": corp_code,
                     "corp_name": corp_name,
                     "stock_code": stock_code,
@@ -168,14 +213,60 @@ async def screener_v2(
                     "filter_reasons": result.filter_result.failed_reasons,
                     "indicators": indicators_dict,
                 }
-                if result.filter_result.passed:
-                    results.append(item)
-                else:
-                    filtered_out.append(item)
             else:
-                no_data_corps.append(corp_name)
+                # 데이터 없는 기업도 DB에 저장 (리스트에 표시되도록)
+                save_buffett_analysis(
+                    corp_code=corp_code,
+                    corp_name=corp_name,
+                    stock_code=stock_code,
+                    sector=sector,
+                    bsns_year=year,
+                    fs_div=fs_div,
+                    total_score=0,
+                    signal="데이터없음",
+                    filter_passed=False,
+                    filter_reasons=["재무제표 데이터 없음"],
+                    indicators={},
+                    data_source="데이터 없음",
+                )
+                print(f"[SCREENER] {corp_name}: No data available (saved to DB)")
+                return {
+                    "corp_code": corp_code,
+                    "corp_name": corp_name,
+                    "stock_code": stock_code,
+                    "sector": sector,
+                    "total_score": 0,
+                    "signal": "데이터없음",
+                    "filter_passed": False,
+                    "filter_reasons": ["재무제표 데이터 없음"],
+                    "indicators": {},
+                    "no_data": True,
+                }
         except Exception as e:
-            no_data_corps.append(f"{corp_name}(오류: {str(e)[:30]})")
+            print(f"[SCREENER ERROR] {corp_name}: {e}")
+            return {"error": f"{corp_name}(오류: {str(e)[:30]})"}
+
+    # 배치 단위로 병렬 처리 (50개씩 - 안정성과 속도 균형)
+    batch_size = 50
+    for i in range(0, len(companies_to_analyze), batch_size):
+        batch = companies_to_analyze[i:i+batch_size]
+        tasks = [analyze_company(code, name, stock, sector) for code, name, stock, sector in batch]
+        batch_results = await asyncio.gather(*tasks)
+
+        # 배치 간 대기 제거 (속도 최우선)
+        # await asyncio.sleep(0)  # 딜레이 없음
+
+        for item in batch_results:
+            if "error" in item:
+                no_data_corps.append(item["error"])
+            elif item.get("no_data"):
+                # 데이터 없는 기업도 filtered_out에 포함 (UI에 표시)
+                filtered_out.append(item)
+                no_data_corps.append(item["corp_name"])
+            elif item.get("filter_passed"):
+                results.append(item)
+            else:
+                filtered_out.append(item)
 
     # 점수순 정렬
     results.sort(key=lambda x: x["total_score"], reverse=True)
@@ -217,27 +308,73 @@ async def get_screener_years():
 async def refresh_screener(
     year: str = Query(..., description="사업연도"),
     fs_div: str = Query("CFS", description="재무제표 구분"),
-    limit: int = Query(100, description="분석 개수", ge=1, le=4000),
+    limit: int = Query(100, description="분석 개수", ge=1, le=5000),
 ):
     """
-    스크리너 데이터 새로고침 (기존 캐시 삭제 후 재분석)
+    스크리너 데이터 새로고침 (CSV 없는 기업만 API 호출, 병렬 처리)
     """
     import time
     start_time = time.time()
 
-    # 해당 연도/재무제표 캐시 삭제
-    clear_buffett_analysis(year, fs_div)
     print(f"[REFRESH] Starting analysis for {year}/{fs_div}, limit={limit}")
 
-    # 새로 분석 (use_cache=False로 호출)
+    # 전체 COMPANIES 사용 (limit이 전체보다 크면 전체 사용)
+    all_companies = COMPANIES[:limit] if limit < len(COMPANIES) else COMPANIES
+
+    # CSV 존재하는 기업과 없는 기업 구분
+    from shared.storage.csv_storage import csv_storage
+    companies_to_analyze = []
+    companies_skipped = []
+
+    for corp_code, corp_name, stock_code, sector in all_companies:
+        # CSV 파일 존재 확인
+        params = {
+            "corp_code": corp_code,
+            "bsns_year": year,
+            "reprt_code": "11011",  # 사업보고서
+            "fs_div": fs_div
+        }
+
+        if csv_storage.file_exists("fnlttSinglAcntAll.json", params):
+            companies_skipped.append(corp_name)
+        else:
+            companies_to_analyze.append((corp_code, corp_name, stock_code, sector))
+
+    total = len(companies_to_analyze)
+    print(f"[REFRESH] Skipped {len(companies_skipped)} companies (CSV exists)")
+    print(f"[REFRESH] Fetching {total} companies (CSV missing)")
+
+    # 새로 분석 (병렬 처리)
     results = []
     filtered_out = []
     no_data_corps = []
     error_corps = []
     saved_count = 0
 
-    for i, (corp_code, corp_name, stock_code, sector) in enumerate(COMPANIES[:limit]):
+    # 병렬 처리 함수
+    async def analyze_and_save(corp_code, corp_name, stock_code, sector):
         try:
+            # === 1단계: 쓰레기 데이터 분리수거 (Gemini 필터) ===
+            from features.companies.filter import is_trash_stock
+            is_trash, trash_reason = is_trash_stock(corp_name, stock_code)
+            if is_trash:
+                save_buffett_analysis(
+                    corp_code=corp_code,
+                    corp_name=corp_name,
+                    stock_code=stock_code,
+                    sector=sector,
+                    bsns_year=year,
+                    fs_div=fs_div,
+                    total_score=0,
+                    signal="투자금지",
+                    filter_passed=False,
+                    filter_reasons=[f"쓰레기주식: {trash_reason}"],
+                    indicators={},
+                    data_source="1단계 필터 탈락",
+                )
+                return {"saved": True, "passed": False, "corp_name": corp_name, "trash": True}
+
+            # === 2단계: 재무제표 분석 ===
             result = await financial_analyzer.analyze(corp_code, corp_name, year, fs_div)
             if result:
                 indicators_dict = {
@@ -263,24 +400,55 @@ async def refresh_screener(
                     filter_passed=result.filter_result.passed,
                     filter_reasons=result.filter_result.failed_reasons,
                     indicators=indicators_dict,
+                    data_source=result.data_source,
                 )
-                saved_count += 1
-
-                if result.filter_result.passed:
-                    results.append(corp_name)
-                else:
-                    filtered_out.append(corp_name)
+                return {"saved": True, "passed": result.filter_result.passed, "corp_name": corp_name}
             else:
-                no_data_corps.append(corp_name)
-
-            # 진행 상황 로깅 (매 50개마다)
-            if (i + 1) % 50 == 0:
-                elapsed = time.time() - start_time
-                print(f"[REFRESH] Progress: {i+1}/{limit} ({elapsed:.1f}s) - saved={saved_count}, no_data={len(no_data_corps)}")
-
+                # 데이터 없는 기업도 DB에 저장 (리스트에 표시되도록)
+                save_buffett_analysis(
+                    corp_code=corp_code,
+                    corp_name=corp_name,
+                    stock_code=stock_code,
+                    sector=sector,
+                    bsns_year=year,
+                    fs_div=fs_div,
+                    total_score=0,
+                    signal="데이터없음",
+                    filter_passed=False,
+                    filter_reasons=["재무제표 데이터 없음"],
+                    indicators={},
+                    data_source="데이터 없음",
+                )
+                return {"saved": True, "passed": False, "corp_name": corp_name, "no_data": True}
         except Exception as e:
-            error_corps.append(f"{corp_name}({str(e)[:50]})")
             print(f"[REFRESH ERROR] {corp_name}: {e}")
+            return {"error": f"{corp_name}({str(e)[:50]})"}
+
+    # 배치 단위로 병렬 처리 (50개씩 - 안정성과 속도 균형)
+    batch_size = 50
+    for i in range(0, total, batch_size):
+        batch = companies_to_analyze[i:i+batch_size]
+        tasks = [analyze_and_save(code, name, stock, sector) for code, name, stock, sector in batch]
+        batch_results = await asyncio.gather(*tasks)
+
+        for item in batch_results:
+            if "saved" in item:
+                saved_count += 1
+                if item["passed"]:
+                    results.append(item["corp_name"])
+                else:
+                    filtered_out.append(item["corp_name"])
+                    if item.get("no_data"):
+                        no_data_corps.append(item["corp_name"])
+            elif "error" in item:
+                error_corps.append(item["error"])
+
+        # 진행 상황 로깅
+        elapsed = time.time() - start_time
+        print(f"[REFRESH] Progress: {min(i+batch_size, total)}/{total} ({elapsed:.1f}s) - saved={saved_count}, no_data={len(no_data_corps)}")
+
+        # 배치 간 대기 제거 (속도 최우선)
+        # await asyncio.sleep(0)  # 딜레이 없음
 
     elapsed = time.time() - start_time
     print(f"[REFRESH] Complete: {saved_count} saved, {len(no_data_corps)} no_data, {len(error_corps)} errors in {elapsed:.1f}s")
@@ -598,5 +766,304 @@ async def debug_analysis(
                 "roe_percent": round(roe, 2),
                 "debt_ratio_percent": round(debt_ratio, 2),
             }
+        }
+    )
+
+
+# ========================
+# API 호출 / 분석 분리 엔드포인트
+# ========================
+
+@router.get("/v2/debug/csv-status")
+async def debug_csv_status(
+    year: str = Query("2023", description="사업연도"),
+    fs_div: str = Query("CFS", description="재무제표 구분"),
+    limit: int = Query(10, description="확인할 기업 수", ge=1, le=100),
+):
+    """디버그: CSV 파일 존재 여부 확인"""
+    from shared.storage.csv_storage import csv_storage
+    import os
+
+    csv_status = []
+    for corp_code, corp_name, stock_code, sector in COMPANIES[:limit]:
+        params = {
+            "corp_code": corp_code,
+            "bsns_year": year,
+            "reprt_code": "11011",
+            "fs_div": fs_div
+        }
+
+        filepath = csv_storage._make_filepath("fnlttSinglAcntAll.json", params)
+        exists = filepath.exists()
+        size = os.path.getsize(filepath) if exists else 0
+
+        csv_status.append({
+            "corp_name": corp_name,
+            "corp_code": corp_code,
+            "csv_exists": exists,
+            "csv_path": str(filepath),
+            "size_bytes": size
+        })
+
+    csv_dir = csv_storage.csv_dir
+    csv_files = list(csv_dir.glob("*.csv"))
+
+    return BaseResponse(
+        success=True,
+        message=f"CSV 상태 확인 완료",
+        data={
+            "csv_directory": str(csv_dir),
+            "total_csv_files": len(csv_files),
+            "companies_checked": csv_status,
+        }
+    )
+
+
+@router.post("/v2/fetch")
+async def fetch_api_data(
+    year: str = Query(..., description="사업연도"),
+    fs_div: str = Query("CFS", description="재무제표 구분"),
+    limit: int = Query(100, description="조회 개수", ge=1, le=4000),
+    batch_size: int = Query(100, description="배치 크기 (기본 100, 속도 우선)", ge=1, le=500),
+    max_concurrent: int = Query(100, description="최대 동시 요청 수 (기본 100, 속도 우선)", ge=1, le=500),
+):
+    """
+    1단계: DART API 호출해서 CSV 저장만 (분석 안함)
+
+    - CSV 파일이 이미 있으면 스킵
+    - API 호출만 하고 점수 계산은 하지 않음
+    - 나중에 /analyze 엔드포인트로 분석
+
+    파라미터:
+    - batch_size: 한 배치당 처리할 기업 수 (기본 100)
+    - max_concurrent: API 동시 요청 수 (기본 100)
+    """
+    import time
+    start_time = time.time()
+
+    # max_concurrent는 프론트엔드 표시용, 실제로는 dart_client의 세마포어(100) 사용
+    # 세마포어는 dart_client.py에서 고정값 100으로 설정됨 (속도 최우선)
+
+    companies_to_fetch = COMPANIES[:limit] if limit < len(COMPANIES) else COMPANIES
+    fetched_count = 0
+    skipped_count = 0
+    failed_corps = []
+
+    # 병렬 API 호출
+    async def fetch_company(corp_code, corp_name, stock_code, sector):
+        nonlocal fetched_count, skipped_count
+
+        # CSV 존재 확인
+        params = {
+            "corp_code": corp_code,
+            "bsns_year": year,
+            "reprt_code": "11011",
+            "fs_div": fs_div
+        }
+
+        if csv_storage.file_exists("fnlttSinglAcntAll.json", params):
+            skipped_count += 1
+            return {"status": "skipped", "corp_name": corp_name}
+
+        # API 호출 (dart_client가 자동으로 CSV 저장)
+        try:
+            data = await dart_client.get_financial_statements(
+                corp_code=corp_code,
+                bsns_year=year,
+                reprt_code="11011",
+                fs_div=fs_div
+            )
+
+            status = data.get("status", "unknown")
+            message = data.get("message", "")
+
+            if status == "000":
+                fetched_count += 1
+                print(f"[FETCH OK] {corp_name}")
+                return {"status": "fetched", "corp_name": corp_name}
+            else:
+                error_msg = f"{corp_name} (status={status}, msg={message})"
+                failed_corps.append(error_msg)
+                print(f"[FETCH FAIL] {error_msg}")
+                return {"status": "failed", "corp_name": corp_name, "error": message}
+
+        except Exception as e:
+            error_msg = f"{corp_name} (exception={str(e)[:50]})"
+            failed_corps.append(error_msg)
+            print(f"[FETCH ERROR] {error_msg}")
+            return {"status": "error", "corp_name": corp_name, "error": str(e)[:50]}
+
+    # 배치 처리 (동적 배치 크기)
+    total_batches = (len(companies_to_fetch) + batch_size - 1) // batch_size
+    for batch_idx, i in enumerate(range(0, len(companies_to_fetch), batch_size), 1):
+        batch = companies_to_fetch[i:i+batch_size]
+        tasks = [fetch_company(code, name, stock, sector) for code, name, stock, sector in batch]
+        await asyncio.gather(*tasks)
+
+        # 프로그레스 출력
+        progress = (batch_idx / total_batches) * 100
+        print(f"[PROGRESS] {batch_idx}/{total_batches} batches ({progress:.1f}%) - Fetched: {fetched_count}, Skipped: {skipped_count}, Failed: {len(failed_corps)}")
+
+    elapsed = time.time() - start_time
+
+    success = fetched_count > 0 or skipped_count > 0  # 하나라도 성공하면 success
+
+    return BaseResponse(
+        success=success,
+        message=f"API 호출 완료: {fetched_count}개 fetch, {skipped_count}개 skip, {len(failed_corps)}개 fail ({elapsed:.1f}초)",
+        data={
+            "year": year,
+            "fs_div": fs_div,
+            "fetched_count": fetched_count,
+            "skipped_count": skipped_count,
+            "failed_count": len(failed_corps),
+            "failed_corps": failed_corps,  # 전체 보여주기
+            "elapsed_seconds": round(elapsed, 1),
+            "total_companies": len(companies_to_fetch),
+        }
+    )
+
+
+@router.post("/v2/analyze")
+async def analyze_from_csv(
+    year: str = Query(..., description="사업연도"),
+    fs_div: str = Query("CFS", description="재무제표 구분"),
+    limit: int = Query(100, description="조회 개수", ge=1, le=4000),
+    batch_size: int = Query(100, description="배치 크기 (동시 처리 개수)", ge=1, le=500),
+):
+    """
+    2단계: CSV에서 읽어서 점수 계산만 (API 호출 안함)
+
+    - /fetch로 미리 받아둔 CSV 읽어서 분석
+    - API 호출 없이 로컬 CSV만 사용
+    - 결과는 buffett_analysis.csv에 저장
+
+    파라미터:
+    - batch_size: 한 배치당 처리할 기업 수 (기본 100)
+    """
+    import time
+    start_time = time.time()
+
+    companies_to_analyze = COMPANIES[:limit] if limit < len(COMPANIES) else COMPANIES
+    results = []
+    filtered_out = []
+    no_csv_corps = []
+
+    # 분석 함수 (CSV에서만 읽음)
+    async def analyze_from_csv_file(corp_code, corp_name, stock_code, sector):
+        # 1단계: 쓰레기 필터
+        from features.companies.filter import is_trash_stock
+        is_trash, trash_reason = is_trash_stock(corp_name, stock_code)
+
+        if is_trash:
+            save_buffett_analysis(
+                corp_code=corp_code,
+                corp_name=corp_name,
+                stock_code=stock_code,
+                sector=sector,
+                bsns_year=year,
+                fs_div=fs_div,
+                total_score=0,
+                signal="투자금지",
+                filter_passed=False,
+                filter_reasons=[f"쓰레기주식: {trash_reason}"],
+                indicators={},
+                data_source="1단계 필터 탈락",
+            )
+            return {
+                "corp_name": corp_name,
+                "filter_passed": False,
+                "no_csv": False,
+            }
+
+        # CSV 존재 확인
+        params = {
+            "corp_code": corp_code,
+            "bsns_year": year,
+            "reprt_code": "11011",
+            "fs_div": fs_div
+        }
+
+        if not csv_storage.file_exists("fnlttSinglAcntAll.json", params):
+            no_csv_corps.append(corp_name)
+            return {"corp_name": corp_name, "no_csv": True}
+
+        # 분석 (financial_analyzer가 CSV에서 읽음)
+        try:
+            result = await financial_analyzer.analyze(corp_code, corp_name, year, fs_div)
+
+            if result:
+                # 지표 딕셔너리 생성
+                indicators_dict = {
+                    indicator.name: {
+                        "value": indicator.value,
+                        "score": indicator.score,
+                        "max_score": indicator.max_score,
+                        "grade": indicator.grade,
+                        "description": indicator.description,
+                        "category": indicator.category,
+                    }
+                    for indicator in result.indicators
+                }
+
+                # DB 저장
+                save_buffett_analysis(
+                    corp_code=corp_code,
+                    corp_name=corp_name,
+                    stock_code=stock_code,
+                    sector=sector,
+                    bsns_year=year,
+                    fs_div=fs_div,
+                    total_score=result.total_score,
+                    signal=result.signal,
+                    filter_passed=result.filter_result.passed,
+                    filter_reasons=result.filter_result.failed_reasons,
+                    indicators=indicators_dict,
+                    data_source=result.data_source,
+                )
+
+                return {
+                    "corp_name": corp_name,
+                    "filter_passed": result.filter_result.passed,
+                    "total_score": result.total_score,
+                    "no_csv": False,
+                }
+            else:
+                return {"corp_name": corp_name, "no_csv": True}
+
+        except Exception as e:
+            print(f"[ANALYZE ERROR] {corp_name}: {e}")
+            return {"corp_name": corp_name, "no_csv": True}
+
+    # 배치 처리 (동적 배치 크기)
+    for i in range(0, len(companies_to_analyze), batch_size):
+        batch = companies_to_analyze[i:i+batch_size]
+        tasks = [analyze_from_csv_file(code, name, stock, sector) for code, name, stock, sector in batch]
+        batch_results = await asyncio.gather(*tasks)
+
+        for item in batch_results:
+            if item.get("no_csv"):
+                no_csv_corps.append(item["corp_name"])
+            elif item.get("filter_passed"):
+                results.append(item)
+            else:
+                filtered_out.append(item)
+
+    elapsed = time.time() - start_time
+
+    # CSV flush
+    csv_storage._flush_results()
+
+    return BaseResponse(
+        success=True,
+        message=f"분석 완료: {len(results)}개 통과, {len(filtered_out)}개 필터 탈락, {len(no_csv_corps)}개 CSV 없음 ({elapsed:.1f}초)",
+        data={
+            "year": year,
+            "fs_div": fs_div,
+            "passed_count": len(results),
+            "filtered_count": len(filtered_out),
+            "no_csv_count": len(no_csv_corps),
+            "no_csv_corps": no_csv_corps[:30],
+            "elapsed_seconds": round(elapsed, 1),
         }
     )
