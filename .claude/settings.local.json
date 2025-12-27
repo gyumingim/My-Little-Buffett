@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker-compose restart:*)",
+      "Bash(docker-compose logs:*)",
+      "Bash(docker-compose up:*)",
+      "Bash(docker-compose exec:*)",
+      "Bash(docker exec:*)",
+      "Bash(docker logs:*)",
+      "Bash(docker-compose build:*)",
+      "Bash(curl:*)",
+      "Bash(ls -la \"c:\\\\Users\\\\a3162\\\\My-Little-Buffett\\\\backend\\\\data\"\" 2>/dev/null || echo \"Data directory does not exist yet \")",
+      "Bash(if exist sharedcachesqlite_cache.py del sharedcachesqlite_cache.py)",
+      "Bash(git -C \"c:/Users/a3162/My-Little-Buffett\" diff HEAD~5 --name-only)",
+      "Bash(git -C \"c:/Users/a3162/My-Little-Buffett\" log --oneline -10)",
+      "Bash(git -C \"c:/Users/a3162/My-Little-Buffett\" diff backend/features/indicators/analyzer.py)",
+      "Bash(git -C \"c:/Users/a3162/My-Little-Buffett\" diff backend/shared/api/dart_client.py)",
+      "Bash(git -C \"c:/Users/a3162/My-Little-Buffett\" diff backend/features/indicators/router.py)",
+      "Bash(git -C \"c:/Users/a3162/My-Little-Buffett\" diff nginx.conf)",
+      "Bash(docker-compose ps:*)",
+      "Bash(find:*)",
+      "Bash(docker volume:*)",
+      "Bash(docker cp:*)",
+      "Bash(docker-compose down:*)"
+    ]
+  }
+}

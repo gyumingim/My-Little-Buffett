@@ -273,17 +273,20 @@ class AnalysisResult:
     recommendation: str
     filter_result: FilterResult
     metrics: dict
+    # 데이터 출처 정보 (대체 데이터 사용 시)
+    data_source: str = ""  # 예: "CFS/2023", "OFS/2022 (연결재무제표 없음)", "OFS/2021 (2년 전 데이터)"
 
 
 class BuffettAnalyzer:
     """버핏형 가치투자 분석기"""
 
     async def analyze(self, corp_code: str, corp_name: str, year: str, fs_div: str = "CFS") -> AnalysisResult | None:
-        """종합 분석 수행 (데이터 없으면 최대 3년 전까지 fallback, CFS→OFS fallback)"""
+        """종합 분석 수행 (데이터 없으면 최대 6년 전까지 fallback, CFS→OFS fallback, 사업보고서→반기보고서 fallback)"""
 
         statements = None
         actual_year = year
         actual_fs_div = fs_div
+        actual_report = "11011"  # 사업보고서
         tried_combinations = []
 
         # fs_div 우선순위: CFS(연결) → OFS(개별)
@@ -291,29 +294,56 @@ class BuffettAnalyzer:
         if fs_div == "CFS":
             fs_divs_to_try.append("OFS")  # 연결 없으면 개별로 시도
 
-        # 연도 + 재무제표 유형 조합으로 시도
+        # 보고서 유형 우선순위: 11011(사업보고서) → 11012(반기보고서)
+        report_codes = ["11011", "11012"]
+
+        # 연도 + 재무제표 유형 + 보고서 유형 조합으로 시도
         for try_fs_div in fs_divs_to_try:
-            for year_offset in range(4):  # 0, 1, 2, 3년 전
-                try_year = str(int(year) - year_offset)
-                data = await dart_client.get_financial_statements(
-                    corp_code=corp_code, bsns_year=try_year, reprt_code="11011", fs_div=try_fs_div
-                )
+            for year_offset in range(6):  # 0~5년 전 (6년치)
+                for reprt_code in report_codes:
+                    try_year = str(int(year) - year_offset)
+                    data = await dart_client.get_financial_statements(
+                        corp_code=corp_code, bsns_year=try_year, reprt_code=reprt_code, fs_div=try_fs_div
+                    )
 
-                status = data.get("status", "unknown")
-                tried_combinations.append(f"{try_fs_div}/{try_year}={status}")
+                    status = data.get("status", "unknown")
+                    tried_combinations.append(f"{try_fs_div}/{try_year}/{reprt_code}={status}")
 
-                if status == "000" and data.get("list"):
-                    statements = data.get("list", [])
-                    actual_year = try_year
-                    actual_fs_div = try_fs_div
+                    # 에러 상태 로깅 (999: 네트워크 에러만)
+                    if status == "999":
+                        print(f"[ANALYZE] {corp_name} {try_fs_div}/{try_year}/{reprt_code}: Network error - {data.get('message', '')[:80]}")
+
+                    if status == "000" and data.get("list"):
+                        statements = data.get("list", [])
+                        actual_year = try_year
+                        actual_fs_div = try_fs_div
+                        actual_report = reprt_code
+                        break
+                if statements:
                     break
             if statements:
                 break
 
         if not statements:
-            # 디버그: 모든 시도 조합 출력 (처음 10개 회사만)
-            # print(f"[ANALYZE] {corp_name}: No data after trying {tried_combinations}")
+            # 간단한 로그 (상세는 위에서 이미 출력됨)
+            print(f"[ANALYZE] {corp_name}: No data (tried {len(tried_combinations)} combinations)")
             return None
+
+        # 데이터 출처 정보 생성
+        data_source = f"{actual_fs_div}/{actual_year}"
+        year_diff = int(year) - int(actual_year)
+        fs_changed = actual_fs_div != fs_div
+        report_changed = actual_report != "11011"
+
+        if year_diff > 0 or fs_changed or report_changed:
+            notes = []
+            if fs_changed:
+                notes.append(f"{fs_div} 없음")
+            if year_diff > 0:
+                notes.append(f"{year_diff}년 전")
+            if report_changed:
+                notes.append("반기보고서")
+            data_source += f" ({', '.join(notes)})"
 
         # 3개년 지표 추출 (당기 데이터 없으면 전기/전전기에서 fallback)
         current = extract_metrics_with_fallback(statements)
@@ -409,33 +439,51 @@ class BuffettAnalyzer:
             metrics={
                 "current": current.__dict__,
                 "previous": previous.__dict__,
-            }
+            },
+            data_source=data_source
         )
 
     def _apply_filters(self, current: FinancialMetrics, previous: FinancialMetrics) -> FilterResult:
-        """필터링 단계: 좀비 기업 걸러내기"""
+        """
+        2단계: 생존성 및 회계 무결성 검증 (Gemini 하드 필터)
+
+        하나라도 탈락하면 '투자 금지' 대상
+        """
         failed_reasons = []
 
-        # 필터 1: 이자보상배율 < 1.0 (이자도 못 갚는 기업)
+        # === Gemini 필터 1: 현금흐름의 법칙 ===
+        # 2년 연속 영업활동현금흐름 < 0 (돈을 못 벌어오는 기업)
+        if current.operating_cash_flow < 0 and previous.operating_cash_flow < 0:
+            failed_reasons.append("2년 연속 영업현금흐름 마이너스 (현금 창출 실패)")
+
+        # === Gemini 필터 2: 좀비 기업 판독 ===
+        # 이자보상배율 < 1.0 (영업이익으로 이자도 못 갚는 기업)
         if current.finance_cost > 0:
             interest_coverage = current.operating_income / current.finance_cost
             if interest_coverage < 1.0:
-                failed_reasons.append(f"이자보상배율 {interest_coverage:.1f}배 (1.0 미만 - 이자도 못 갚음)")
+                failed_reasons.append(f"이자보상배율 {interest_coverage:.1f}배 (이자도 못 갚는 좀비 기업)")
 
-        # 필터 2: 2년 연속 영업CF < 순이익 (이익의 질 낮음)
-        if current.net_income > 0 and previous.net_income > 0:
-            curr_cfq = current.operating_cash_flow / current.net_income if current.net_income > 0 else 0
-            prev_cfq = previous.operating_cash_flow / previous.net_income if previous.net_income > 0 else 0
-            if curr_cfq < 1.0 and prev_cfq < 1.0:
-                failed_reasons.append(f"2년 연속 현금흐름 질 낮음 (영업CF < 순이익)")
-
-        # 필터 3: 자본잠식 (자본총계 <= 0)
+        # === Gemini 필터 3: 자본잠식 체크 ===
+        # 자기자본 < 자본금 (회사의 근간이 흔들림)
         if current.total_equity <= 0:
-            failed_reasons.append("자본잠식 상태")
+            failed_reasons.append("자본잠식 (자기자본 <= 0)")
 
-        # 필터 4: 2년 연속 적자
+        # === 추가 필터: 버핏의 기준 ===
+        # 필터 4: 2년 연속 적자 (지속적 손실)
         if current.net_income < 0 and previous.net_income < 0:
             failed_reasons.append("2년 연속 적자")
+
+        # 필터 5: 2년 연속 영업이익 마이너스 (본업에서 돈 못 벌어)
+        if current.operating_income < 0 and previous.operating_income < 0:
+            failed_reasons.append("2년 연속 영업이익 마이너스 (본업 실패)")
+
+        # 필터 6: 매출액이 없거나 급격히 감소 (사업 중단 위험)
+        if current.revenue <= 0:
+            failed_reasons.append("매출액 없음")
+        elif previous.revenue > 0:
+            revenue_change = ((current.revenue - previous.revenue) / previous.revenue) * 100
+            if revenue_change < -50:
+                failed_reasons.append(f"매출액 급감 ({revenue_change:.1f}% - 사업 축소)")
 
         return FilterResult(
             passed=len(failed_reasons) == 0,
@@ -793,53 +841,21 @@ class BuffettAnalyzer:
         )
 
     def _score_to_grade(self, score: float, max_score: float) -> str:
-        """점수를 등급으로 변환 (S~F 세분화)"""
+        """점수를 등급으로 변환 (S~F with +++/++/+/-/--/---, 총 49단계)"""
         ratio = score / max_score if max_score > 0 else 0
 
-        # S급 (95% 이상) - 탁월
-        if ratio >= 0.95:
-            return "S"
-        # A급 (85~95%)
-        elif ratio >= 0.90:
-            return "A+"
-        elif ratio >= 0.85:
-            return "A"
-        elif ratio >= 0.80:
-            return "A-"
-        # B급 (70~80%)
-        elif ratio >= 0.77:
-            return "B+"
-        elif ratio >= 0.73:
-            return "B"
-        elif ratio >= 0.70:
-            return "B-"
-        # C급 (55~70%)
-        elif ratio >= 0.65:
-            return "C+"
-        elif ratio >= 0.60:
-            return "C"
-        elif ratio >= 0.55:
-            return "C-"
-        # D급 (35~55%)
-        elif ratio >= 0.45:
-            return "D+"
-        elif ratio >= 0.40:
-            return "D"
-        elif ratio >= 0.35:
-            return "D-"
-        # E급 (15~35%)
-        elif ratio >= 0.25:
-            return "E+"
-        elif ratio >= 0.20:
-            return "E"
-        elif ratio >= 0.15:
-            return "E-"
-        # F급 (15% 미만)
-        elif ratio >= 0.10:
-            return "F+"
-        elif ratio >= 0.05:
-            return "F"
-        return "F-"
+        # S~F 등급 (7개), 각 등급당 +++, ++, +, 기본, -, --, --- (7단계씩 = 49단계)
+        grades = ['S', 'A', 'B', 'C', 'D', 'E', 'F']
+        modifiers = ['+++', '++', '+', '', '-', '--', '---']
+
+        # 비율을 49등급으로 변환 (0~48)
+        grade_index = int((1 - ratio) * 49)
+        grade_index = min(48, max(0, grade_index))  # 0~48 범위 제한
+
+        letter_index = grade_index // 7  # 0~6 (S~F)
+        modifier_index = grade_index % 7  # 0~6 (+++, ++, +, 기본, -, --, ---)
+
+        return f"{grades[letter_index]}{modifiers[modifier_index]}"
 
     def _get_signal(self, total_score: float, filter_result: FilterResult) -> tuple[str, str]:
         """매매 신호 결정 (10단계 세분화)"""

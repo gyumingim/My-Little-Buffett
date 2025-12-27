@@ -29,7 +29,7 @@
     no_data_corps: string[];
   }
 
-  let loading = true;
+  let loading = false;  // 자동 로딩 제거
   let refreshing = false;
   let error = '';
   let data: ScreenerData | null = null;
@@ -41,12 +41,17 @@
   let limit = 100;
   let useCache = true;
 
+  // API/분석 분리 설정
+  let fetching = false;
+  let analyzing = false;
+  let batchSize = 100;
+  let maxConcurrent = 100;
+  let showAdvanced = false;
+
   const yearOptions = ['2024', '2023', '2022', '2021', '2020'];
   const limitOptions = [100, 500, 1000, 2000, 4000];
 
-  onMount(async () => {
-    await fetchData();
-  });
+  // onMount 제거 - 자동 로딩 없음
 
   async function fetchData() {
     loading = true;
@@ -74,6 +79,62 @@
     await fetchData();
     useCache = true;
     refreshing = false;
+  }
+
+  async function fetchAPIData() {
+    fetching = true;
+    error = '';
+
+    try {
+      const response = await fetch(
+        `/api/indicators/v2/fetch?year=${year}&fs_div=${fsDiv}&limit=${limit}&batch_size=${batchSize}&max_concurrent=${maxConcurrent}`,
+        { method: 'POST' }
+      );
+      const result = await response.json();
+
+      const failMsg = result.data.failed_count > 0
+        ? `\n\n실패 목록 (처음 10개):\n${result.data.failed_corps.slice(0, 10).join('\n')}`
+        : '';
+
+      alert(`API 호출 완료!\n- Fetch: ${result.data.fetched_count}개\n- Skip: ${result.data.skipped_count}개\n- Fail: ${result.data.failed_count}개\n- 시간: ${result.data.elapsed_seconds}초${failMsg}`);
+
+      if (!result.success && result.data.failed_count > 0) {
+        console.error('실패한 기업들:', result.data.failed_corps);
+        error = `API 호출 실패: ${result.data.failed_count}개 기업 실패`;
+      }
+    } catch (e) {
+      error = '네트워크 오류';
+      console.error(e);
+    } finally {
+      fetching = false;
+    }
+  }
+
+  async function analyzeData() {
+    analyzing = true;
+    error = '';
+
+    try {
+      const response = await fetch(
+        `/api/indicators/v2/analyze?year=${year}&fs_div=${fsDiv}&limit=${limit}&batch_size=${batchSize}`,
+        { method: 'POST' }
+      );
+      const result = await response.json();
+
+      if (result.success) {
+        alert(`분석 완료!\n- 통과: ${result.data.passed_count}개\n- 탈락: ${result.data.filtered_count}개\n- CSV 없음: ${result.data.no_csv_count}개\n- 시간: ${result.data.elapsed_seconds}초`);
+        // 분석 완료 후 결과 새로고침
+        useCache = true;
+        await fetchData();
+      } else {
+        error = result.message || '분석 실패';
+      }
+    } catch (e) {
+      error = '네트워크 오류';
+      console.error(e);
+    } finally {
+      analyzing = false;
+    }
   }
 
   function goToCompany(stock: Stock) {
@@ -128,7 +189,7 @@
     <div class="filters">
       <div class="filter-group">
         <label for="year">사업연도</label>
-        <select id="year" bind:value={year} on:change={fetchData}>
+        <select id="year" bind:value={year}>
           {#each yearOptions as y}
             <option value={y}>{y}년</option>
           {/each}
@@ -137,7 +198,7 @@
 
       <div class="filter-group">
         <label for="fs_div">재무제표</label>
-        <select id="fs_div" bind:value={fsDiv} on:change={fetchData}>
+        <select id="fs_div" bind:value={fsDiv}>
           <option value="CFS">연결</option>
           <option value="OFS">개별</option>
         </select>
@@ -145,7 +206,7 @@
 
       <div class="filter-group">
         <label for="limit">분석 수</label>
-        <select id="limit" bind:value={limit} on:change={fetchData}>
+        <select id="limit" bind:value={limit}>
           {#each limitOptions as l}
             <option value={l}>{l}개</option>
           {/each}
@@ -159,6 +220,64 @@
         {refreshing ? '분석 중...' : '새로 분석'}
       </Button>
     </div>
+
+    <!-- 고급 설정 -->
+    <div class="advanced-section">
+      <button class="toggle-advanced" on:click={() => showAdvanced = !showAdvanced}>
+        {showAdvanced ? '▼' : '▶'} 고급 설정 (API 분리 실행)
+      </button>
+
+      {#if showAdvanced}
+        <div class="advanced-controls">
+          <div class="control-row">
+            <div class="control-group">
+              <label for="batch_size">배치 크기</label>
+              <input type="number" id="batch_size" bind:value={batchSize} min="1" max="500" />
+              <span class="control-hint">한 번에 처리할 기업 수</span>
+            </div>
+
+            <div class="control-group">
+              <label for="max_concurrent">동시 요청 수</label>
+              <input type="number" id="max_concurrent" bind:value={maxConcurrent} min="1" max="500" />
+              <span class="control-hint">API 동시 호출 수 (높을수록 빠름/불안정)</span>
+            </div>
+          </div>
+
+          <div class="action-buttons">
+            <Button variant="primary" on:click={fetchAPIData} disabled={fetching || analyzing}>
+              {fetching ? '호출 중...' : '1️⃣ API 호출 (CSV 저장)'}
+            </Button>
+            <Button variant="primary" on:click={analyzeData} disabled={fetching || analyzing}>
+              {analyzing ? '분석 중...' : '2️⃣ 점수 계산 (CSV 읽기)'}
+            </Button>
+          </div>
+
+          <!-- 로딩 상태 표시 -->
+          {#if fetching}
+            <div class="loading-indicator">
+              <div class="spinner"></div>
+              <span>API 호출 중... ({limit}개 기업 처리)</span>
+            </div>
+          {/if}
+
+          {#if analyzing}
+            <div class="loading-indicator">
+              <div class="spinner"></div>
+              <span>분석 중... ({limit}개 기업 처리)</span>
+            </div>
+          {/if}
+
+          <div class="workflow-hint">
+            <p><strong>워크플로우:</strong></p>
+            <ol>
+              <li>API 호출 → DART에서 재무 데이터 받아서 CSV 저장 (느림, 한 번만)</li>
+              <li>점수 계산 → CSV 읽어서 버핏 점수 계산 (빠름, 여러 번 가능)</li>
+              <li>조회 → 계산된 점수 보기</li>
+            </ol>
+          </div>
+        </div>
+      {/if}
+    </div>
   </Card>
 
   {#if loading}
@@ -171,6 +290,23 @@
       <div class="error-state">
         <p class="error-message">{error}</p>
         <Button variant="secondary" on:click={fetchData}>다시 시도</Button>
+      </div>
+    </Card>
+  {:else if !data}
+    <!-- 초기 화면 (데이터 없음) -->
+    <Card>
+      <div class="empty-state">
+        <div class="empty-icon">📊</div>
+        <h3>버핏형 우량주 스크리너</h3>
+        <p>위에서 조회 조건을 설정하고 "조회" 버튼을 클릭하세요.</p>
+        <div class="quick-guide">
+          <h4>💡 사용 방법</h4>
+          <ul>
+            <li><strong>조회:</strong> 저장된 분석 결과 보기 (빠름)</li>
+            <li><strong>새로 분석:</strong> 최신 데이터로 재분석 (느림)</li>
+            <li><strong>고급 설정:</strong> API 호출과 분석을 분리 실행</li>
+          </ul>
+        </div>
       </div>
     </Card>
   {:else if data}
@@ -570,14 +706,45 @@
   .signal-sell { background: #fee2e2; color: #991b1b; }
   .signal-strong-sell { background: #fecaca; color: #7f1d1d; }
   .signal-disqualified { background: #f3f4f6; color: #6b7280; }
+  .signal-neutral { background: #f3f4f6; color: #6b7280; }
 
-  .grade-s { background: linear-gradient(135deg, #fbbf24, #f59e0b); color: white; }
-  .grade-a { background: #dcfce7; color: #166534; }
-  .grade-b { background: #d1fae5; color: #047857; }
-  .grade-c { background: #fef3c7; color: #92400e; }
-  .grade-d { background: #ffedd5; color: #9a3412; }
-  .grade-e { background: #fed7aa; color: #c2410c; }
-  .grade-f { background: #fee2e2; color: #991b1b; }
+  /* 세분화된 등급 색상 (S~F with +++/++/+/-/--/---) */
+  .grade-s {
+    background: linear-gradient(135deg, #fbbf24, #f59e0b);
+    color: white;
+    font-weight: 800;
+    box-shadow: 0 2px 4px rgba(251, 191, 36, 0.3);
+  }
+  .grade-a {
+    background: #dcfce7;
+    color: #166534;
+    border: 1px solid #86efac;
+  }
+  .grade-b {
+    background: #d1fae5;
+    color: #047857;
+    border: 1px solid #6ee7b7;
+  }
+  .grade-c {
+    background: #fef3c7;
+    color: #92400e;
+    border: 1px solid #fde047;
+  }
+  .grade-d {
+    background: #ffedd5;
+    color: #9a3412;
+    border: 1px solid #fdba74;
+  }
+  .grade-e {
+    background: #fed7aa;
+    color: #c2410c;
+    border: 1px solid #fb923c;
+  }
+  .grade-f {
+    background: #fee2e2;
+    color: #991b1b;
+    border: 1px solid #fca5a5;
+  }
 
   /* 필터링 탈락 섹션 */
   .filtered-section {
@@ -654,6 +821,173 @@
     border-radius: var(--border-radius);
   }
 
+  /* 초기 화면 (empty state) */
+  .empty-state {
+    text-align: center;
+    padding: 3rem 2rem;
+  }
+
+  .empty-icon {
+    font-size: 4rem;
+    margin-bottom: 1rem;
+  }
+
+  .empty-state h3 {
+    font-size: 1.5rem;
+    margin-bottom: 0.5rem;
+    color: #1f2937;
+  }
+
+  .empty-state > p {
+    color: #6b7280;
+    margin-bottom: 2rem;
+  }
+
+  .quick-guide {
+    background: #f9fafb;
+    border-radius: 8px;
+    padding: 1.5rem;
+    text-align: left;
+    max-width: 500px;
+    margin: 0 auto;
+  }
+
+  .quick-guide h4 {
+    margin: 0 0 1rem 0;
+    color: #374151;
+  }
+
+  .quick-guide ul {
+    margin: 0;
+    padding-left: 1.5rem;
+    color: #4b5563;
+  }
+
+  .quick-guide li {
+    margin-bottom: 0.75rem;
+  }
+
+  /* 고급 설정 섹션 */
+  .advanced-section {
+    margin-top: 1.5rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid #e5e7eb;
+  }
+
+  .toggle-advanced {
+    background: none;
+    border: none;
+    color: #2563eb;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: 600;
+    padding: 0.5rem 0;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .toggle-advanced:hover {
+    color: #1d4ed8;
+  }
+
+  .advanced-controls {
+    margin-top: 1rem;
+    padding: 1.5rem;
+    background: #f9fafb;
+    border-radius: 8px;
+  }
+
+  .control-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1.5rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .control-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .control-group label {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: #374151;
+  }
+
+  .control-group input {
+    padding: 0.5rem;
+    border: 1px solid #d1d5db;
+    border-radius: 4px;
+    font-size: 1rem;
+  }
+
+  .control-hint {
+    font-size: 0.75rem;
+    color: #6b7280;
+  }
+
+  .action-buttons {
+    display: flex;
+    gap: 1rem;
+    margin-bottom: 1rem;
+  }
+
+  .workflow-hint {
+    background: #fffbeb;
+    border-left: 4px solid #f59e0b;
+    padding: 1rem;
+    margin-top: 1rem;
+  }
+
+  .workflow-hint p {
+    margin: 0 0 0.5rem 0;
+    color: #92400e;
+    font-weight: 600;
+  }
+
+  .workflow-hint ol {
+    margin: 0;
+    padding-left: 1.5rem;
+    color: #78350f;
+  }
+
+  .workflow-hint li {
+    margin-bottom: 0.5rem;
+  }
+
+  /* 로딩 인디케이터 스타일 */
+  .loading-indicator {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 1rem;
+    margin-top: 1rem;
+    background: #f0f9ff;
+    border: 1px solid #bfdbfe;
+    border-radius: 8px;
+    color: #1e40af;
+    font-size: 0.875rem;
+    font-weight: 500;
+  }
+
+  .spinner {
+    width: 20px;
+    height: 20px;
+    border: 3px solid #bfdbfe;
+    border-top-color: #3b82f6;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
   @media (max-width: 768px) {
     .filters {
       flex-direction: column;
@@ -670,6 +1004,14 @@
 
     .legend-items {
       flex-direction: column;
+    }
+
+    .action-buttons {
+      flex-direction: column;
+    }
+
+    .control-row {
+      grid-template-columns: 1fr;
     }
   }
 </style>
