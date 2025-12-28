@@ -44,15 +44,16 @@ class CSVStorage:
             return None
 
         try:
-            # CSV 읽기
-            df = pd.read_csv(filepath, encoding="utf-8")
+            # CSV 읽기 (# 주석 라인 명시적으로 스킵)
+            df = pd.read_csv(filepath, encoding="utf-8", comment='#')
 
             # 메타데이터 읽기 (첫 줄 주석)
             with open(filepath, "r", encoding="utf-8") as f:
                 first_line = f.readline()
                 if first_line.startswith("#"):
                     metadata_str = first_line[1:].strip()
-                    metadata = dict(item.split("=") for item in metadata_str.split(","))
+                    # split("=", 1)로 첫 번째 =만 기준으로 분할 (fetched_at 값에 =가 포함될 수 있음)
+                    metadata = dict(item.split("=", 1) for item in metadata_str.split(","))
                     status = metadata.get("status", "000")
                 else:
                     status = "000"
@@ -175,7 +176,7 @@ class CSVStorage:
             "total_score": round(total_score, 2),
             "signal": signal,
             "filter_passed": 1 if filter_passed else 0,
-            "filter_reasons": json.dumps(filter_reasons, ensure_ascii=False),
+            "filter_reasons": "|".join(filter_reasons) if filter_reasons else "",
             "data_source": data_source,
             "created_at": datetime.now().isoformat(),
         }
@@ -211,8 +212,12 @@ class CSVStorage:
         print(f"[CSV] Flushed {len(self._results_buffer)} results to {results_path}")
         self._results_buffer.clear()
 
-    def get_analysis_results(self, bsns_year: str, fs_div: str) -> list[dict]:
+    def get_analysis_results(self, bsns_year: str, fs_div: str = None) -> list[dict]:
         """분석 결과 조회 (년도 + 재무제표 구분)
+
+        Args:
+            bsns_year: 사업연도
+            fs_div: 재무제표 구분 (None이면 전체 조회)
 
         Returns:
             list[dict]: 분석 결과 리스트 (점수 내림차순 정렬)
@@ -228,22 +233,39 @@ class CSVStorage:
         try:
             df = pd.read_csv(results_path, encoding="utf-8")
 
-            # 필터링
-            df_filtered = df[(df["bsns_year"] == bsns_year) & (df["fs_div"] == fs_div)]
+            # bsns_year를 문자열로 변환 (CSV에서 int로 읽힐 수 있음)
+            df["bsns_year"] = df["bsns_year"].astype(str)
+
+            # 필터링 (fs_div가 None이면 year만 필터링)
+            if fs_div is None or fs_div == "ALL":
+                df_filtered = df[df["bsns_year"] == str(bsns_year)]
+            else:
+                df_filtered = df[(df["bsns_year"] == str(bsns_year)) & (df["fs_div"] == fs_div)]
 
             # 점수 내림차순 정렬
             df_filtered = df_filtered.sort_values("total_score", ascending=False)
 
-            # dict 리스트로 변환
+            # dict 리스트로 변환 (NaN을 None으로)
             results = df_filtered.to_dict(orient="records")
 
-            # filter_reasons를 JSON에서 list로 파싱
+            # NaN/Inf 값 정리 및 filter_reasons 파싱
             for result in results:
-                if isinstance(result.get("filter_reasons"), str):
-                    try:
-                        result["filter_reasons"] = json.loads(result["filter_reasons"])
-                    except:
-                        result["filter_reasons"] = []
+                # NaN/None을 기본값으로 변환
+                for key, value in result.items():
+                    if pd.isna(value):
+                        if key == "filter_reasons":
+                            result[key] = []
+                        elif isinstance(value, float):
+                            result[key] = 0.0
+                        else:
+                            result[key] = ""
+
+                # filter_reasons를 파싱 (| 구분자)
+                reasons_value = result.get("filter_reasons")
+                if isinstance(reasons_value, str) and reasons_value:
+                    result["filter_reasons"] = reasons_value.split("|")
+                elif not isinstance(reasons_value, list):
+                    result["filter_reasons"] = []
 
             return results
 
@@ -251,8 +273,8 @@ class CSVStorage:
             print(f"[CSV READ ERROR] {results_path}: {e}")
             return []
 
-    def get_buffett_analysis_count(self, bsns_year: str, fs_div: str) -> int:
-        """분석 결과 개수 조회"""
+    def get_buffett_analysis_count(self, bsns_year: str, fs_div: str = None) -> int:
+        """분석 결과 개수 조회 (fs_div=None이면 전체)"""
         results = self.get_analysis_results(bsns_year, fs_div)
         return len(results)
 

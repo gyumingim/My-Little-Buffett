@@ -15,7 +15,7 @@
 
 from datetime import datetime
 from dataclasses import dataclass
-from shared.api.dart_client import dart_client
+from shared.storage.csv_storage import csv_storage
 
 
 @dataclass
@@ -80,8 +80,14 @@ def parse_amount(value: str | None) -> float:
     """금액 문자열을 숫자로 변환"""
     if not value or value == "":
         return 0.0
+    # pandas가 빈 셀을 NaN으로 변환하는 경우 처리
+    if isinstance(value, float):
+        import math
+        if math.isnan(value):
+            return 0.0
+        return value
     try:
-        return float(value.replace(",", ""))
+        return float(str(value).replace(",", ""))
     except:
         return 0.0
 
@@ -281,71 +287,42 @@ class BuffettAnalyzer:
     """버핏형 가치투자 분석기"""
 
     async def analyze(self, corp_code: str, corp_name: str, year: str, fs_div: str = "CFS") -> AnalysisResult | None:
-        """종합 분석 수행 (데이터 없으면 최대 6년 전까지 fallback, CFS→OFS fallback, 사업보고서→반기보고서 fallback)"""
+        """종합 분석 수행 (CSV 전용 - API 호출 없음)"""
 
-        statements = None
-        actual_year = year
-        actual_fs_div = fs_div
-        actual_report = "11011"  # 사업보고서
-        tried_combinations = []
+        # 1. CFS(연결재무제표) CSV 먼저 시도
+        params_cfs = {
+            "corp_code": corp_code,
+            "bsns_year": year,
+            "reprt_code": "11011",
+            "fs_div": "CFS"
+        }
+        data = csv_storage.get_api_data("fnlttSinglAcntAll.json", params_cfs)
 
-        # fs_div 우선순위: CFS(연결) → OFS(개별)
-        fs_divs_to_try = [fs_div]
-        if fs_div == "CFS":
-            fs_divs_to_try.append("OFS")  # 연결 없으면 개별로 시도
+        status = data.get("status", "unknown") if data else "unknown"
+        used_fs_div = "CFS"
 
-        # 보고서 유형 우선순위: 11011(사업보고서) → 11012(반기보고서)
-        report_codes = ["11011", "11012"]
+        # 2. CFS CSV 없으면 OFS(개별재무제표) CSV 시도
+        if not data or status != "000" or not data.get("list"):
+            print(f"[ANALYZE] {corp_name}: No CFS data, trying OFS...")
+            params_ofs = {
+                "corp_code": corp_code,
+                "bsns_year": year,
+                "reprt_code": "11011",
+                "fs_div": "OFS"
+            }
+            data = csv_storage.get_api_data("fnlttSinglAcntAll.json", params_ofs)
+            status = data.get("status", "unknown") if data else "unknown"
+            used_fs_div = "OFS"
 
-        # 연도 + 재무제표 유형 + 보고서 유형 조합으로 시도
-        for try_fs_div in fs_divs_to_try:
-            for year_offset in range(6):  # 0~5년 전 (6년치)
-                for reprt_code in report_codes:
-                    try_year = str(int(year) - year_offset)
-                    data = await dart_client.get_financial_statements(
-                        corp_code=corp_code, bsns_year=try_year, reprt_code=reprt_code, fs_div=try_fs_div
-                    )
-
-                    status = data.get("status", "unknown")
-                    tried_combinations.append(f"{try_fs_div}/{try_year}/{reprt_code}={status}")
-
-                    # 에러 상태 로깅 (999: 네트워크 에러만)
-                    if status == "999":
-                        print(f"[ANALYZE] {corp_name} {try_fs_div}/{try_year}/{reprt_code}: Network error - {data.get('message', '')[:80]}")
-
-                    if status == "000" and data.get("list"):
-                        statements = data.get("list", [])
-                        actual_year = try_year
-                        actual_fs_div = try_fs_div
-                        actual_report = reprt_code
-                        break
-                if statements:
-                    break
-            if statements:
-                break
-
-        if not statements:
-            # 간단한 로그 (상세는 위에서 이미 출력됨)
-            print(f"[ANALYZE] {corp_name}: No data (tried {len(tried_combinations)} combinations)")
+        # 3. 둘 다 없으면 None 반환 (CSV 파일 없음)
+        if not data or status != "000" or not data.get("list"):
+            print(f"[ANALYZE] {corp_name}: No CSV data for {year} (tried CFS and OFS)")
             return None
 
-        # 데이터 출처 정보 생성
-        data_source = f"{actual_fs_div}/{actual_year}"
-        year_diff = int(year) - int(actual_year)
-        fs_changed = actual_fs_div != fs_div
-        report_changed = actual_report != "11011"
+        print(f"[ANALYZE] {corp_name}: Using {used_fs_div} for {year}")
+        statements = data.get("list", [])
 
-        if year_diff > 0 or fs_changed or report_changed:
-            notes = []
-            if fs_changed:
-                notes.append(f"{fs_div} 없음")
-            if year_diff > 0:
-                notes.append(f"{year_diff}년 전")
-            if report_changed:
-                notes.append("반기보고서")
-            data_source += f" ({', '.join(notes)})"
-
-        # 3개년 지표 추출 (당기 데이터 없으면 전기/전전기에서 fallback)
+        # 3개년 지표 추출
         current = extract_metrics_with_fallback(statements)
         previous = extract_metrics(statements, "frmtrm")
         before_prev = extract_metrics(statements, "bfefrmtrm")
@@ -416,21 +393,11 @@ class BuffettAnalyzer:
         # 신호 결정
         signal, recommendation = self._get_signal(total_score, filter_result)
 
-        # fallback 발생 시 recommendation에 표시
-        fallback_info = []
-        if actual_year != year:
-            fallback_info.append(f"{actual_year}년")
-        if actual_fs_div != fs_div:
-            fs_label = "개별" if actual_fs_div == "OFS" else "연결"
-            fallback_info.append(f"{fs_label}재무제표")
-        if fallback_info:
-            recommendation = f"[{', '.join(fallback_info)} 사용] " + recommendation
-
         return AnalysisResult(
             corp_code=corp_code,
             corp_name=corp_name,
-            year=actual_year,  # 실제 데이터가 있는 연도
-            fs_div=actual_fs_div,  # 실제 사용된 재무제표 유형
+            year=year,
+            fs_div=used_fs_div,
             indicators=indicators,
             total_score=round(total_score, 1),
             signal=signal,
@@ -440,7 +407,7 @@ class BuffettAnalyzer:
                 "current": current.__dict__,
                 "previous": previous.__dict__,
             },
-            data_source=data_source
+            data_source=f"{used_fs_div}/{year}"
         )
 
     def _apply_filters(self, current: FinancialMetrics, previous: FinancialMetrics) -> FilterResult:
